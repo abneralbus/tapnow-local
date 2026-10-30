@@ -1,0 +1,11 @@
+[
+  {
+    "label": "my-muse-account",
+    "cookies": {
+      "hatch_sess": "REPLACE_WITH_YOUR_COOKIE",
+      "hatch_gw": "REPLACE_WITH_YOUR_COOKIE",
+      "hatch_vml": "REPLACE_WITH_YOUR_COOKIE",
+      "hatch_native_auth_device": "REPLACE_WITH_YOUR_COOKIE"
+    }
+  }
+]

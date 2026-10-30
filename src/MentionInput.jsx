@@ -1,0 +1,10 @@
+import React,{useRef,useState} from 'react';
+import {Image,Video} from 'lucide-react';
+import TextInput from './TextInput.mjs';
+import {editMentions,mentionQuery,insertMention} from '../shared/node-mentions.mjs';
+export default function MentionInput({value,mentions=[],items=[],onChange,onPick,onKeyDown,...props}){
+ const input=useRef(),[query,setQuery]=useState(null),[index,setIndex]=useState(0);
+ const options=items.filter(item=>!query||item.title.toLowerCase().includes(query.query.toLowerCase()));
+ function choose(item){const next=insertMention(value,mentions,query,item);onChange(next.text,next.mentions);onPick?.(item);setQuery(null);requestAnimationFrame(()=>{input.current?.focus();input.current?.setSelectionRange(next.caret,next.caret);});}
+ return <div className="mention-input">{query&&<div className="agent-mention-picker" role="listbox" aria-label="引用图片或视频">{options.map((item,i)=><button key={item.id} type="button" role="option" aria-selected={i===index} onPointerEnter={()=>setIndex(i)} onPointerMove={()=>setIndex(i)} onMouseDown={e=>e.preventDefault()} onClick={()=>choose(item)}><span className="agent-mention-thumb" aria-hidden="true">{item.type==='image'&&item.src?<img src={item.src} alt=""/>:item.type==='video'?<Video size={18}/>:<Image size={18}/>}</span><span className="agent-mention-title">{item.title}</span><small>{item.type==='video'?'视频':'图片'}</small></button>)}{!options.length&&<p>没有匹配的图片或视频</p>}</div>}<TextInput {...props} ref={input} value={value} aria-autocomplete="list" onCompositionStart={()=>setQuery(null)} onChange={e=>{const text=e.target.value;const next=editMentions(value,text,mentions);onChange(text,next);setQuery(mentionQuery(text,e.target.selectionStart,next));setIndex(0);}} onKeyDown={e=>{if(query&&e.key==='Escape'){e.preventDefault();setQuery(null);return;}if(query&&options.length&&['ArrowDown','ArrowUp','Enter'].includes(e.key)){e.preventDefault();if(e.key==='Enter')choose(options[Math.min(index,options.length-1)]);else setIndex((index+(e.key==='ArrowDown'?1:-1)+options.length)%options.length);return;}onKeyDown?.(e);}}/></div>;
+}
