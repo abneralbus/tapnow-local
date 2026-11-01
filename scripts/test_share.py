@@ -17,7 +17,11 @@ class ShareTests(unittest.TestCase):
             for name in ['README.md', 'src/App.jsx', '.env.example', 'config/flow.env.example',
                          'data/accounts.json', '.env', '.env.production', 'vendor/pkg/.env',
                          'vendor/pkg/data/accounts.json', 'node_modules/secret.js',
-                         'src/local.log', 'VERIFICATION.md']:
+                         'src/local.log', 'VERIFICATION.md', 'config/google-key.json',
+                         'config/google_key.json', 'config/credentials.json', 'config/service-account-prod.json',
+                         'vendor/pkg/.cache/state.json', 'vendor/pkg/.runtime/config.json',
+                         'vendor/pkg/.ipynb_checkpoints/test.ipynb', 'vendor/pkg/_metadata/state.json',
+                         'config/private.pem', 'config/private.key']:
                 file = root / name
                 file.parent.mkdir(parents=True, exist_ok=True)
                 file.write_text(name)

@@ -1,0 +1,23 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {readFile} from 'node:fs/promises';
+import {transform} from 'esbuild';
+import {JSDOM} from 'jsdom';
+import React,{act} from 'react';
+const dom=new JSDOM('<html><body></body></html>');globalThis.window=dom.window;globalThis.document=dom.window.document;globalThis.IS_REACT_ACT_ENVIRONMENT=true;
+const {createRoot}=await import('react-dom/client');
+const source=(await readFile(new URL('../src/GenerationPanel.jsx',import.meta.url),'utf8')).replace(/from '([^']+)'/g,(_,name)=>`from ${JSON.stringify(name.startsWith('.')?new URL('../src/'+name,import.meta.url).href:import.meta.resolve(name))}`);
+const {code}=await transform(source,{loader:'jsx',format:'esm'});
+const {default:Panel}=await import('data:text/javascript;base64,'+Buffer.from(code).toString('base64'));
+test('completed Colab result offers manual release; rendering success never releases automatically',async t=>{
+ const div=document.createElement('div');document.body.append(div);const root=createRoot(div);let released=0;
+ t.after(()=>{act(()=>root.unmount());div.remove();});
+ const actions={images:[],update:()=>{},releaseColab:async()=>{released++;}};
+ const data={provider:'colab',prompt:'scene',status:'running'};
+ await act(async()=>root.render(React.createElement(Panel,{id:'node',type:'video',data,actions})));
+ assert.equal(div.querySelector('.colab-result-actions'),null);
+ await act(async()=>root.render(React.createElement(Panel,{id:'node',type:'video',data:{...data,status:'completed',src:'/media/result.mp4'},actions})));
+ assert.match(div.textContent,/已成功生成并保存到本地/);assert.equal(released,0);
+ await act(async()=>div.querySelector('.colab-result-actions button').click());
+ assert.equal(released,1);assert.match(div.textContent,/已请求释放 Colab GPU/);
+});

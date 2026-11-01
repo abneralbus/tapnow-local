@@ -1,3 +1,4 @@
+import {h3References,h3Prompt} from '../shared/h3-references.mjs';
 import {referencePrompt} from '../shared/reference-prompt.mjs';
 import {videoRequest} from './validation.mjs';
 
@@ -16,6 +17,15 @@ export function generationRequest(body){
   if(!models.some(m=>m.id===model))throw new Error('当前服务商不支持所选模型或生成类型');
   const prompt=typeof body.prompt==='string'?body.prompt.trim():'';
   if(!prompt||prompt.length>12000)throw new Error('提示词需要 1–12000 个字符');
+  if(provider==='colab'){
+    const mode=body.mode??(body.references?.length?'reference':'text'),references=h3References(body.references??[],mode);
+    const aspectRatio=body.aspectRatio??'16:9';
+    if(!['16:9','9:16','1:1'].includes(aspectRatio))throw new Error('画幅比例无效');
+    const offset=body.prompt.length-body.prompt.trimStart().length;
+    const mentions=Array.isArray(body.mentions)?body.mentions.map(m=>({...m,start:m?.start-offset,end:m?.end-offset})):body.mentions;
+    const compiled=h3Prompt(prompt,references,mentions);
+    return {...videoRequest({...body,prompt:compiled}),provider,kind,model,mode,references,aspectRatio};
+  }
   const raw=body.references??[];
   if(!Array.isArray(raw)||raw.length>8)throw new Error('最多支持 8 张参考图片');
   const references=[];
@@ -39,11 +49,6 @@ export function generationRequest(body){
   const offset=(body.prompt||'').length-(body.prompt||'').trimStart().length;
   const mentions=body.mentions===undefined?[]:Array.isArray(body.mentions)?body.mentions.map(m=>({...m,start:m?.start-offset,end:m?.end-offset})):null;
   const compiled=referencePrompt(prompt,references,mentions);
-  if(provider==='colab'){
-    if(mode!=='text'||references.length)throw new Error('当前 Colab H3 尚未接通图片参考；请使用文字生视频或切换服务商');
-    if(aspectRatio!=='16:9')throw new Error('当前 Colab H3 只接通 16:9');
-    return {...videoRequest({...body,prompt:compiled}),provider,kind,model,mode,references,aspectRatio};
-  }
   const duration=Number(body.duration??(provider==='flow'?8:4));
   if(kind==='video'&&(!Number.isInteger(duration)||duration<4||duration>15))throw new Error('视频时长应为 4–15 秒');
   if(provider==='muse'&&mode==='frames')throw new Error('当前 Muse 接入只能使用图片参考，尚不能锁定首尾帧；请切换参考图模式');

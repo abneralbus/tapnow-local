@@ -744,6 +744,7 @@ class FlowSDK:
                 failures.append((mid, exc))
                 continue
             self._remember_operation(operation.operation_id, pid)
+            self._remember_submission(payload, pid)
             operation_ids.append(operation.operation_id)
 
         return self._video_submit_result(
@@ -809,9 +810,11 @@ class FlowSDK:
             return _batch_failure(exc)
 
         self._remember_operation(operation.operation_id, pid)
+        self._remember_submission(payload, pid)
         out = self._video_submit_result(
             [operation.operation_id], [], model=model, sources=1
         )
+        out["submission_payload"] = payload
         out["duration_s"] = duration_s
         out["resolution"] = resolution
         return out
@@ -845,8 +848,40 @@ class FlowSDK:
             # Read back out of the envelope rather than returned alongside it,
             # so the two can never disagree about what was submitted.
             "operation_names": extract_operation_names(resp),
+            "remote_handles": [{"scene_id": scene, "media_id": self._operation_media[scene],
+                                "project_id": self._operation_projects.get(scene)}
+                               for scene in operation_ids if scene in self._operation_media],
             "model": model,
         }
+
+    def restore_video_dispatch(self, dispatch: dict, project_id: str) -> None:
+        """Restore only read handles, never replay a paid submission."""
+        for handle in dispatch.get("remote_handles", []):
+            scene, media = handle.get("scene_id"), handle.get("media_id")
+            if is_valid_project_id(scene) and is_valid_project_id(media):
+                self._remember_operation(scene, handle.get("project_id") or project_id)
+                self._operation_media[scene] = media
+        # Also accepts checkpoints written before remote_handles was introduced.
+        self._remember_submission(dispatch.get("submission_payload"), project_id)
+        for scene in dispatch.get("operation_names", []):
+            if isinstance(scene, str):
+                self._remember_operation(scene, project_id)
+
+    def _remember_submission(self, payload: Any, project_id: str) -> None:
+        if not isinstance(payload, list) or len(payload) < 4:
+            return
+        scenes, media_records = payload[2], payload[3]
+        if not isinstance(scenes, list) or not isinstance(media_records, list):
+            return
+        scene_ids = {r[0] for r in scenes if isinstance(r, list) and r and isinstance(r[0], str)}
+        for record in media_records:
+            if not isinstance(record, list) or len(record) < 3:
+                continue
+            media, project, scene = record[:3]
+            if (isinstance(scene, str) and scene in scene_ids and project == project_id
+                    and is_valid_project_id(media)):
+                self._remember_operation(scene, project_id)
+                self._operation_media[scene] = media
 
     # ── polling (jwpduf -> Zzl0ze -> as29s) ────────────────────────────────
     async def check_async(
@@ -894,20 +929,11 @@ class FlowSDK:
         }
 
     async def _poll_operation(self, operation_id: str) -> dict:
-        """One poll round for one operation, as a REST operation envelope.
+        """Poll the media handle and expose a stable scene-keyed worker result.
 
-        Three signals have to agree before a clip can be downloaded, and they
-        arrive out of order:
-
-        * the operation poll says how the job is going — but it can sit at no
-          status at all on a job that finished, and a ``"Media not found."``
-          complaint on it is survivable rather than fatal;
-        * the project listing is what actually gains a media id;
-        * the media record serves the poster image first and grows the
-          ``/video/`` url in later.
-
-        So an operation reports SUCCESSFUL only once a video url exists.
-        Everything short of that is PENDING, and the worker owns the timeout.
+        Scene ids identify editor entries; jwpduf accepts media ids. Explicit
+        media errors terminate immediately, while temporary lookup/transport
+        failures remain pending. Success requires an actual video URL.
         """
         media_id = self._operation_media.get(operation_id)
         complaint: Optional[str] = None
@@ -918,7 +944,32 @@ class FlowSDK:
                 return _pending_operation(operation_id, complaint=complaint)
             self._operation_media[operation_id] = media_id
 
-        urls = await self._media_urls(media_id)
+        # jwpduf accepts MEDIA ids. A scene id always yields "Media not found",
+        # including for successful renders. Submit returns both kinds of id.
+        try:
+            payload = await self._payload(
+                fb.RPC_OPERATION, fb.operation_request(media_id), timeout=60.0
+            )
+        except (fb.FlowBatchError, fb.RpcError):
+            # A transport failure is not a generation verdict; a completed
+            # media record may still be available through as29s.
+            payload = None
+        records = payload[2] if isinstance(payload, list) and len(payload) > 2 else []
+        matching = next((r for r in records or []
+                         if isinstance(r, list) and r and r[0] == media_id), None)
+        error = fb.read_operation_error(matching) if matching else None
+        if error and error != "Media not found.":
+            return {"operation": {"name": operation_id, "done": True,
+                                  "error": {"message": error}},
+                    "status": "MEDIA_GENERATION_STATUS_FAILED"}
+        urls = fb.read_media_urls(payload, media_id)
+        if not urls.video:
+            try:
+                urls = await self._media_urls(media_id)
+            except fb.RpcError as exc:
+                if exc.rpcid != fb.RPC_MEDIA or exc.detail != [5]:
+                    raise
+                return _pending_operation(operation_id, complaint=error or str(exc), media_id=media_id)
         if not urls.video:
             # The id landed but the clip is still being written. Downloading on
             # the id alone here saves the poster still, not the video.
@@ -942,50 +993,11 @@ class FlowSDK:
     async def _find_operation_media(
         self, operation_id: str
     ) -> tuple[Optional[str], Optional[str]]:
-        """Ask the operation how it is doing, then the listing where its media is.
-
-        The listing is the authority — a poll has been observed never to report
-        a finished job the listing already knew about — but it is also the
-        expensive call, so it is consulted only when the poll says something
-        happened, when the poll is unreadable, or every third round regardless.
-        """
-        rounds = self._operation_polls.get(operation_id, 0) + 1
-        self._operation_polls[operation_id] = rounds
-
-        project_id = (
-            self._operation_projects.get(operation_id) or effective_project_id()
-        )
-        complaint: Optional[str] = None
-        worth_looking = rounds % 3 == 0
-        try:
-            operation = fb.read_operation(
-                await self._payload(
-                    fb.RPC_OPERATION,
-                    fb.operation_request(operation_id),
-                    timeout=60.0,
-                )
-            )
-            complaint = operation.error
-            project_id = operation.project_id or project_id
-            if project_id:
-                self._remember_operation(operation_id, project_id)
-            worth_looking = (
-                worth_looking or operation.done or operation.complained
-            )
-        except Exception as exc:  # broad by design: reported, never swallowed
-            # An operation that has decayed to a bare id still appears in the
-            # listing, so a failed poll is a reason to look there, not to stop.
-            logger.debug(
-                "operation %s poll unreadable (%s), trying the listing",
-                operation_id[:20], exc,
-            )
-            worth_looking = True
-
-        if not worth_looking:
-            return None, complaint
+        """Resolve legacy checkpoints which retained only the scene id."""
+        project_id = self._operation_projects.get(operation_id) or effective_project_id()
         if not project_id:
             return None, "no project id for the listing lookup"
-        return await self._media_id_for(operation_id, project_id), complaint
+        return await self._media_id_for(operation_id, project_id), None
 
     async def _media_id_for(
         self, operation_id: str, project_id: str

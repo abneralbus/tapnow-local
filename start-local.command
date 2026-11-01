@@ -2,7 +2,7 @@
 # Start only this project's services. They stop after the last canvas closes.
 set -euo pipefail
 cd "$(dirname "$0")"
-export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"
+export PATH="$PWD/.runtime/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"
 if [ ! -d node_modules ]; then
   echo '请先在此目录运行 npm run setup。'
   exit 1

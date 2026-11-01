@@ -28,7 +28,7 @@ from pydantic import BaseModel
 from sqlmodel import select
 
 from flowboard.db import get_session
-from flowboard.db.models import Asset
+from flowboard.db.models import Asset, MediaProjectMapping
 from flowboard.services import media as media_service
 from flowboard.services.flow_sdk import get_flow_sdk, is_valid_project_id
 
@@ -225,6 +225,13 @@ async def _ingest_image_bytes(
             if node_id is not None and row.node_id is None:
                 row.node_id = node_id
         s.add(row)
+        mapping = s.exec(select(MediaProjectMapping).where(
+            MediaProjectMapping.original_media_id == media_id,
+            MediaProjectMapping.project_id == project_id,
+        )).first()
+        if mapping is None:
+            s.add(MediaProjectMapping(original_media_id=media_id,
+                                      project_id=project_id, project_local_media_id=media_id))
         s.commit()
     out: dict = {"media_id": media_id, "mime": mime, "size": len(raw)}
     dims = _sniff_image_dimensions(raw)

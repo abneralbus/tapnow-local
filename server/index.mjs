@@ -1,8 +1,9 @@
+import {prepareColab} from './colab-client.mjs';
 import express from 'express';
 import {createVideoFrames} from './video-frame.mjs';
 import { createServer } from 'node:http';
-import { randomUUID } from 'node:crypto';
-import { readFile, writeFile, mkdir, rename, readdir, unlink } from 'node:fs/promises';
+import { randomUUID, createHash } from 'node:crypto';
+import { readFile, writeFile, mkdir, rename, readdir, unlink, open } from 'node:fs/promises';
 import { createWriteStream } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
 import { Readable, Transform } from 'node:stream';
@@ -48,12 +49,12 @@ const drainCanvases=installCanvasLibrary(app,data,{
     try{await saveJobs();}catch(error){for(const job of removed){jobs.set(job.id,job);if(job.requestId)requests.set(job.requestId,job.id);}throw error;}
   }
 });
-app.get('/api/config',async(req,res) => res.json({colabUrl:config.colabUrl,hasToken:!!config.colabToken,...await agentConfiguration(data)}));
+app.get('/api/config',async(req,res) => res.json({colabUrl:config.colabUrl,hasToken:!!config.colabToken,colabAutoRelease:config.colabAutoRelease,...await agentConfiguration(data)}));
 app.get('/api/providers',async(req,res)=>res.json(await providerStatus(data)));
 app.put('/api/agent/config',async(req,res)=>{if(activeAgentRequests)return res.status(409).json({error:'Agent 正在回复，请等待完成后切换配置。'});await writeAgentSettings(data,req.body);res.json(await agentConfiguration(data));});
 app.post('/api/agent/test',async(req,res)=>{activeAgentRequests++;checkIdle();const start=performance.now();try{const result=await agentChat(data,{prompt:'请只回复：连接正常。'});res.json({text:result.text.slice(0,300),elapsedMs:Math.round(performance.now()-start),...await agentConfiguration(data)});}finally{activeAgentRequests--;checkIdle();}});
 app.put('/api/config',async(req,res) => {
-  const next={colabUrl:endpoint(req.body.colabUrl),colabToken:typeof req.body.colabToken==='string' && req.body.colabToken ? req.body.colabToken : config.colabToken};
+  const next={...config,colabUrl:endpoint(req.body.colabUrl),colabToken:typeof req.body.colabToken==='string' && req.body.colabToken ? req.body.colabToken : config.colabToken};
   if(next.colabToken.length>1024)throw new Error('Token 过长');
   await saveJSON(path.join(data,'config.json'),next);config=next;res.json({saved:true});
 });
@@ -131,14 +132,12 @@ async function run(job){
   const current=job.connection,deadline=job.startedAt+30*60*1000;
   if(!job.remoteId){
     if(job.status==='cancelled')return;
+    const prepared=await prepareColab(job.input,remote,current,media);
+    if(job.status==='cancelled')return;
     // Persist before dispatch so a crash never causes an automatic duplicate GPU job.
+    job.colabSessionId=prepared.sessionId;
     job.submittedAt=Date.now();await saveJobs();
-    const input=job.input;
-    const response=await remote('/v1/videos',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
-      model:'MiniMaxAI/MiniMax-H3',prompt:input.prompt,seconds:input.duration,task:'t2va',conditions:[],
-      target:{short_edge:input.height,aspect_ratio:'16:9',duration_seconds:input.duration},
-      num_outputs_per_prompt:1,num_inference_steps:input.steps,flow_shift:12,audio_flow_shift:3,seed:input.seed
-    })},current);
+    const response=await remote('/v1/videos',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(prepared.body)},current);
     const remoteJob=await response.json();
     if(!idPattern.test(remoteJob.id))throw new Error('Colab 返回无效任务 ID');
     job.remoteId=remoteJob.id;job.timings={submitMs:Date.now()-job.submittedAt};await record(job);
@@ -167,26 +166,64 @@ async function run(job){
   if(job.status==='cancelled')return;
   const transferStart=Date.now(),filename=job.id+'.mp4',temp=path.join(media,filename+'.part');
   const controller=new AbortController();downloads.set(job.id,controller);
+  const digest=createHash('sha256');
   let bytes=0,header=Buffer.alloc(0);
   try{
     const result=await remote(`/v1/videos/${job.remoteId}/content`,{signal:AbortSignal.any([controller.signal,AbortSignal.timeout(120000)])},current);
     if(!/^(video\/mp4|application\/octet-stream)(;|$)/i.test(result.headers.get('content-type')||''))throw new Error('Colab 没有返回 MP4 视频');
     const limit=new Transform({transform(chunk,encoding,callback){
-      bytes+=chunk.length;if(bytes>250*1024*1024)return callback(new Error('视频超过 250MB'));
+      digest.update(chunk);bytes+=chunk.length;if(bytes>250*1024*1024)return callback(new Error('视频超过 250MB'));
       if(header.length<12){header=Buffer.concat([header,chunk]).subarray(0,12);if(header.length>=12&&header.toString('ascii',4,8)!=='ftyp')return callback(new Error('返回文件不是有效 MP4 容器'));}
       callback(null,chunk);
     }});
     await pipeline(Readable.fromWeb(result.body),limit,createWriteStream(temp));
     if(bytes<12)throw new Error('返回视频为空或不完整');
     if(job.status==='cancelled'){await unlink(temp).catch(()=>{});return;}
+    const savedFile=await open(temp,'r');try{await savedFile.sync();}finally{await savedFile.close();}
     await rename(temp,path.join(media,filename));
     if(job.status==='cancelled'){await unlink(path.join(media,filename)).catch(()=>{});return;}
   }catch(error){await unlink(temp).catch(()=>{});if(job.status==='cancelled')return;throw error;}
   finally{downloads.delete(job.id);}
   job.src='/media/'+filename;job.status='completed';job.finishedAt=Date.now();job.progress=100;
   job.timings={...job.timings,remoteElapsedMs:transferStart-job.submittedAt,transferMs:Date.now()-transferStart,serverTotalMs:Date.now()-job.startedAt};
+  if(job.colabSessionId)job.downloadReceipt={sessionId:job.colabSessionId,bytes,sha256:digest.digest('hex')};
   await record(job);await saveJSON(path.join(data,'last-benchmark.json'),publicJob(job));
+  await acknowledgeColab(job);
+
 }
+async function acknowledgeColab(job){
+  if(!job.downloadReceipt||job.receiptSaved)return;
+  try{
+    await remote(`/v1/videos/${job.remoteId}/receipt`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(job.downloadReceipt)},job.connection);
+    job.receiptSaved=true;delete job.receiptError;
+  }catch(error){job.receiptError='结果已保存在本机，Colab 尚未确认；自动关机暂停：'+error.message;}
+  await record(job);
+}
+app.get('/api/colab/session',async(req,res)=>res.json(await(await remote('/v1/session')).json()));
+app.post('/api/colab/settings',async(req,res)=>{
+  if(typeof req.body.autoRelease!=='boolean')return res.status(400).json({error:'自动释放设置无效'});
+  const next={...config,colabAutoRelease:req.body.autoRelease};
+  await saveJSON(path.join(data,'config.json'),next);config=next;
+  try{
+    const session=await(await remote('/v1/session/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({autoRelease:next.colabAutoRelease}),signal:AbortSignal.timeout(2500)},next)).json();
+    if(session.autoRelease!==next.colabAutoRelease)throw new Error('Colab 未确认自动释放设置');
+    res.json({...session,synced:true});
+  }catch{
+    res.json({autoRelease:next.colabAutoRelease,synced:false});
+  }
+});
+app.post('/api/colab/release',async(req,res)=>{
+  if(pendingJobRequests||[...jobs.values()].some(j=>j.provider==='colab'&&active(j)))return res.status(409).json({error:'仍有 Colab 任务，请等待生成和下载结束'});
+  res.json(await(await remote('/v1/session/release',{method:'POST'})).json());
+});
+app.post('/api/colab/receipts',async(req,res)=>{
+  for(const job of jobs.values())if(job.status==='completed'&&job.downloadReceipt&&!job.receiptSaved&&job.connection?.colabUrl===config.colabUrl){
+    const file=await readFile(path.join(media,path.basename(job.src)));
+    if(file.length!==job.downloadReceipt.bytes||createHash('sha256').update(file).digest('hex')!==job.downloadReceipt.sha256)throw new Error('本地结果校验失败，不能允许自动关机');
+    await acknowledgeColab(job);
+  }
+  res.json({pending:[...jobs.values()].filter(j=>j.downloadReceipt&&!j.receiptSaved&&j.connection?.colabUrl===config.colabUrl).length});
+});
 async function runMedia(job){
   const deadline=job.startedAt+30*60*1000;
   if(!job.remoteId){
@@ -195,9 +232,15 @@ async function runMedia(job){
     job.remoteId=await submitMedia(job.input,data,job.connection);
     job.timings={submitMs:Date.now()-job.submittedAt};await record(job);
   }
-  let info,failures=0;
+  let info,disconnectedAt;
   while(true){
-    try{info=await pollMedia(job,data);failures=0;}catch(error){if(++failures>=3)throw error;await new Promise(r=>setTimeout(r,1500));continue;}
+    try{info=await pollMedia(job,data);disconnectedAt=undefined;}
+    catch(error){
+      disconnectedAt??=Date.now();
+      // Only retry reading the saved remote handle; never resubmit a paid job.
+      if(Date.now()>=Math.min(deadline,disconnectedAt+120000))throw error;
+      await new Promise(r=>setTimeout(r,1500));continue;
+    }
     if(info.status==='unknown')throw new Error('媒体服务返回未知任务状态');
     const terminal=['completed','failed','cancelled'].includes(info.status);
     if(!terminal&&Date.now()>deadline)throw new Error('媒体生成等待超过 30 分钟，未自动重试');

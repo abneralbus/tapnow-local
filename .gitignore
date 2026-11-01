@@ -22,3 +22,19 @@ screenshots/
 /NEXT_STEPS.md
 /Muse-*.md
 *.zip
+
+# Local runtimes, browser state and credentials
+.runtime/
+.cache/
+.ipynb_checkpoints/
+browser-profile/
+vendor/flowboard/extension/_metadata/
+accounts.json
+cookies.json
+api_key
+google-key*
+google_key*
+credentials.json
+service-account*.json
+*.pem
+*.key

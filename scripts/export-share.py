@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Export a source-only review package; never copy local runtime data."""
 import argparse
+import fnmatch
 import json
 from pathlib import Path
 import re
@@ -12,7 +13,9 @@ ROOT_FILES = {'README.md', 'MEDIA-BRIDGE.md', 'LICENSE', '.gitignore', '.env.exa
               'package.json', 'package-lock.json', 'index.html', 'vite.config.js', 'start-local.command'}
 SOURCE_DIRS = {'src', 'server', 'shared', 'scripts', 'tests', 'config', 'docs', 'colab', 'vendor'}
 EXCLUDED = {'data', 'storage', 'node_modules', 'dist', '.venv', 'venv', '.git', '__pycache__',
-            '.pytest_cache', 'screenshots', 'browser-profile', 'accounts.json', 'cookies.json', 'api_key'}
+            '.pytest_cache', '.runtime', '.cache', '.ipynb_checkpoints', '_metadata',
+            'screenshots', 'browser-profile', 'accounts.json', 'cookies.json', 'api_key', 'credentials.json'}
+PRIVATE_PATTERNS = ('google-key*', 'google_key*', 'service-account*.json', '*.pem', '*.key')
 EXTENSIONS = {'.py', '.mjs', '.cjs', '.js', '.jsx', '.ts', '.tsx', '.json', '.md', '.txt',
               '.toml', '.html', '.css', '.sh', '.command', '.ipynb', '.svg'}
 
@@ -27,7 +30,7 @@ def export(source, destination):
     files = []
     for file in sorted(source.rglob('*')):
         relative = file.relative_to(source)
-        if any(part in EXCLUDED or part.startswith('.env') and part != '.env.example' for part in relative.parts):
+        if any(part in EXCLUDED or any(fnmatch.fnmatch(part.lower(), pattern) for pattern in PRIVATE_PATTERNS) or part.startswith('.env') and part != '.env.example' for part in relative.parts):
             continue
         if file.is_symlink() or any(parent.is_symlink() for parent in file.parents if parent != source):
             continue

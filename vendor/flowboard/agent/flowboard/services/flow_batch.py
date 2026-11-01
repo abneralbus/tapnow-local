@@ -632,10 +632,10 @@ def read_upscaled_image(payload: Any) -> str:
 
 
 def read_operation(payload: Any) -> Operation:
-    """`[null, 50, [[opId, projectId, sceneId, status, …]]]`.
+    """Read the first record's id; submit [2] is scenes, poll [2] is media.
 
-    Note the third uuid is the **scene**, not the media. Reading it as a media
-    id is what made every `as29s` lookup answer NOT_FOUND.
+    Video submissions additionally carry media records in [3]. Callers must
+    retain that mapping and use media ids, never scene ids, with jwpduf.
     """
     records = payload[2] if isinstance(payload, list) and len(payload) > 2 else None
     record = records[0] if isinstance(records, list) and records else None
@@ -650,12 +650,10 @@ def read_operation(payload: Any) -> Operation:
 
 
 def read_operation_error(record: list) -> Optional[str]:
-    """The complaint attached to this operation, if it carries one.
+    """Read the failure in a MEDIA record's detail[8] outcome block.
 
-    It hides in the detail block's status slot as
-    ``[4, [null, "Media not found."], ["Media not found."]]``. Measured
-    behaviour: an operation can report exactly that and still deliver a
-    finished 8-second clip, so this is a diagnostic string and nothing more.
+    A scene id sent to the media poll produces a misleading 'Media not found'.
+    Explicit errors on the correct media id are actual generation failures.
     """
     detail = record[5] if len(record) > 5 else None
     if not isinstance(detail, list) or len(detail) <= 8:
@@ -683,25 +681,28 @@ def find_media_id(payload: Any, operation_id: str) -> Optional[str]:
     return None
 
 
-#: The media slot in a listing entry, matched straight off the wire: a title,
-#: a timestamp pair, two nulls, then the media id. Escaped or not, both forms
-#: appear depending on whether the text has been through a JSON decode.
-_MEDIA_SLOT = re.compile(r'null,null,\\?"([0-9a-fA-F-]{36})\\?"')
-
-
 def find_media_id_in_text(text: str, operation_id: str) -> Optional[str]:
-    """Same lookup as :func:`find_media_id`, but on an unparsed listing.
+    """Decode the exact listing entry, never a UUID in a neighbouring entry.
 
-    The project listing has no page size that shrinks it and grows with every
-    generation, so it will outrun whatever response cap is in place — and a
-    truncated tail cannot be JSON-decoded even though the entry we want is
-    sitting in it intact. Scanning the text finds it anyway.
+    The extension window starts inside the first quoted operation id. Its
+    content can still have the batchexecute JSON-string escaping layer.
     """
-    start = text.find(operation_id)
-    if start == -1:
-        return None
-    match = _MEDIA_SLOT.search(text, start, start + 800)
-    return match.group(1) if match else None
+    unescaped = re.sub(
+        r'\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4})',
+        lambda match: json.loads('"' + match.group(0) + '"'), text,
+    )
+    for candidate in (text, unescaped):
+        start = candidate.find(operation_id)
+        if start < 0:
+            continue
+        try:
+            entry, _ = json.JSONDecoder().raw_decode('["' + candidate[start:])
+        except (ValueError, TypeError):
+            continue
+        media_id = find_media_id(entry, operation_id)
+        if media_id and re.fullmatch(r'[0-9a-fA-F-]{36}', media_id):
+            return media_id
+    return None
 
 
 def read_media_urls(payload: Any, media_id: str) -> MediaUrls:

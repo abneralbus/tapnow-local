@@ -8,7 +8,7 @@ const ref={...start,role:'reference'};
 test('frame mode retains an end frame so unsupported input is never silently dropped',()=>{
   const selected=modeReferences([start,end,ref],'frames');
   assert.deepEqual(selected,[start,end]);
-  for(const provider of ['colab','flow','muse'])assert.match(generationIssue('video',provider,'frames',selected,undefined,8),/尾帧/);
+  for(const provider of ['flow','muse'])assert.match(generationIssue('video',provider,'frames',selected,undefined,8),/尾帧/);
 });
 test('Flow controls match single-frame and multi-reference capabilities',()=>{
   assert.equal(generationIssue('video','flow','frames',[start],'veo-fast',8),'');
@@ -17,9 +17,10 @@ test('Flow controls match single-frame and multi-reference capabilities',()=>{
   assert.equal(generationIssue('video','flow','reference',[ref,{...end,role:'reference'}],'omni',6),'');
   assert.match(generationIssue('video','flow','reference',[ref],'omni',5),/4、6、8、10/);
 });
-test('Colab is text-only and Muse uses its real model ids',()=>{
+test('Colab accepts references and Muse uses its real model ids',()=>{
   assert.equal(generationIssue('video','colab','text',[],'MiniMaxAI/MiniMax-H3',4),'');
-  assert.match(generationIssue('video','colab','reference',[ref],undefined,4),/尚未接通图片参考/);
+  assert.equal(generationIssue('video','colab','reference',[ref],undefined,4),'');
+  assert.equal(generationIssue('video','colab','frames',[start,end],undefined,4),'');
   assert.equal(generationIssue('image','muse','reference',[ref],'muse-image'),'');
   assert.match(generationIssue('image','muse','text',[],'sora'),/不支持所选模型/);
 });

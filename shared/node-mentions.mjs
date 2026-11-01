@@ -32,9 +32,9 @@ export function renumberNodes(nodes){
 export function resolveMentions(text,bindings=[],nodes=[]){
  const byId=new Map(nodes.map(n=>[n.id,n])),resolved=[];
  for(const m of bindings){if(text.slice(m.start,m.end)!==m.token)continue;if(!byId.has(m.nodeId))throw new Error('引用的节点已删除，请重新选择 @ 素材');resolved.push(m);}
- const names=[...new Set(nodes.filter(n=>['image','video'].includes(n.type)).map(n=>n.data.title))].filter(Boolean).sort((a,b)=>b.length-a.length);
+ const names=[...new Set(nodes.filter(n=>['image','video','audio'].includes(n.type)).map(n=>n.data.title))].filter(Boolean).sort((a,b)=>b.length-a.length);
  for(const name of names){const token='@'+name;let start=text.indexOf(token);while(start>=0){const end=start+token.length;if(!/[0-9A-Za-z]/.test(text[end]||'')&&!resolved.some(m=>start<m.end&&end>m.start)){
-  const matches=nodes.filter(n=>['image','video'].includes(n.type)&&n.data.title===name);if(matches.length!==1)throw new Error('同名节点无法自动识别，请从 @ 菜单重新选择');resolved.push({nodeId:matches[0].id,start,end,token});
+  const matches=nodes.filter(n=>['image','video','audio'].includes(n.type)&&n.data.title===name);if(matches.length!==1)throw new Error('同名节点无法自动识别，请从 @ 菜单重新选择');resolved.push({nodeId:matches[0].id,start,end,token});
  }start=text.indexOf(token,end);}}
  return resolved.sort((a,b)=>a.start-b.start);
 }

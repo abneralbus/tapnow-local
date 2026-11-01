@@ -15,6 +15,7 @@ def main():
                    'sglang.multimodal_gen.runtime.entrypoints.http_server',
                    'fastapi', 'httpx', 'uvicorn'):
         importlib.import_module(module)
+    import ninja
     cli = Path(sys.executable).parent/'sglang'
     help_text = subprocess.check_output([str(cli), 'serve', '--model-type', 'diffusion', '--help'], text=True, stderr=subprocess.STDOUT)
     for flag in ('--component-residency', '--model-variant', '--pipeline-class-name', '--served-model-name'):

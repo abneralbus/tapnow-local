@@ -527,12 +527,19 @@ def test_omni_duration_keys_agree_with_the_envelope_builder():
 # ── polling ───────────────────────────────────────────────────────────────
 
 
+def _sdk_for_poll(rec):
+    sdk = FlowSDK(client=rec)
+    sdk._remember_operation("op-1", PID)
+    sdk._remember_operation("op-2", PID)
+    return sdk
+
+
 def _poll_recorder(op_id, *, status="CAE", detail=None,
                    media_id=MEDIA, video=True, listing=True):
     return BatchRecorder(responses={
         fb.RPC_OPERATION: [batch_envelope(
             fb.RPC_OPERATION,
-            operation_payload(op_id, status=status, detail=detail),
+            operation_payload(media_id, status=status, detail=detail),
         )],
         fb.RPC_PROJECT_MEDIA: [
             listing_payload_text(op_id, media_id) if listing else ""
@@ -546,7 +553,7 @@ def _poll_recorder(op_id, *, status="CAE", detail=None,
 @pytest.mark.asyncio
 async def test_check_async_succeeds_once_a_video_url_exists():
     rec = _poll_recorder("op-1")
-    out = await FlowSDK(client=rec).check_async(["op-1"])
+    out = await _sdk_for_poll(rec).check_async(["op-1"])
 
     (op,) = out["operations"]
     assert op["name"] == "op-1"
@@ -561,7 +568,7 @@ async def test_check_async_succeeds_once_a_video_url_exists():
 async def test_check_async_asks_the_listing_for_a_window_not_the_whole_thing():
     """The listing is past 17 MB; shipping it whole gets it truncated."""
     rec = _poll_recorder("op-1")
-    await FlowSDK(client=rec).check_async(["op-1"])
+    await _sdk_for_poll(rec).check_async(["op-1"])
     listing_call = rec.rpcs(fb.RPC_PROJECT_MEDIA)[0]
     assert listing_call["match"] == "op-1"
     assert listing_call["captcha_action"] is None, "a poll must not burn a captcha"
@@ -575,7 +582,7 @@ async def test_check_async_stays_pending_while_only_the_poster_exists():
     later, so finishing on the id alone downloads a still picture.
     """
     rec = _poll_recorder("op-1", video=False)
-    out = await FlowSDK(client=rec).check_async(["op-1"])
+    out = await _sdk_for_poll(rec).check_async(["op-1"])
 
     (op,) = out["operations"]
     assert op["done"] is False
@@ -591,7 +598,7 @@ async def test_check_async_treats_media_not_found_as_a_complaint_not_a_verdict()
     stops polling and the clip lands seconds later with nobody watching.
     """
     rec = _poll_recorder("op-1", detail=complaint_detail("Media not found."))
-    out = await FlowSDK(client=rec).check_async(["op-1"])
+    out = await _sdk_for_poll(rec).check_async(["op-1"])
 
     (op,) = out["operations"]
     assert op["done"] is True
@@ -602,7 +609,7 @@ async def test_check_async_treats_media_not_found_as_a_complaint_not_a_verdict()
 @pytest.mark.asyncio
 async def test_check_async_reports_pending_when_the_listing_has_no_media_yet():
     rec = _poll_recorder("op-1", listing=False)
-    out = await FlowSDK(client=rec).check_async(["op-1"])
+    out = await _sdk_for_poll(rec).check_async(["op-1"])
     (op,) = out["operations"]
     assert op["done"] is False
     assert rec.rpcs(fb.RPC_MEDIA) == [], "nothing to look up without a media id"
@@ -616,7 +623,7 @@ async def test_check_async_survives_an_unreadable_operation_poll():
         fb.RPC_PROJECT_MEDIA: [listing_payload_text("op-1", MEDIA)],
         fb.RPC_MEDIA: [batch_envelope(fb.RPC_MEDIA, media_urls_payload(MEDIA))],
     })
-    sdk = FlowSDK(client=rec)
+    sdk = _sdk_for_poll(rec)
     # The listing lookup needs a project; a real submit would have noted one.
     sdk._remember_operation("op-1", PID)
     out = await sdk.check_async(["op-1"])
@@ -627,32 +634,33 @@ async def test_check_async_survives_an_unreadable_operation_poll():
 async def test_check_async_preserves_the_requested_order_and_reports_gaps():
     """The worker keeps per-op state positionally aligned with this list."""
     rec = _poll_recorder("op-2")
-    out = await FlowSDK(client=rec).check_async(["op-1", "op-2"])
+    out = await _sdk_for_poll(rec).check_async(["op-1", "op-2"])
     assert [op["name"] for op in out["operations"]] == ["op-1", "op-2"]
     # op-1 was never polled successfully, so it must read as still running.
     assert out["operations"][0]["done"] is False
 
 
 @pytest.mark.asyncio
-async def test_check_async_does_not_repoll_a_resolved_media_id():
+async def test_check_async_does_not_repeat_listing_lookup():
     rec = _poll_recorder("op-1")
-    sdk = FlowSDK(client=rec)
+    sdk = _sdk_for_poll(rec)
     await sdk.check_async(["op-1"])
-    # Second round: the operation and listing scripts are exhausted, so if the
-    # media id were not cached this would raise from the recorder.
+    # Poll the media again, but never resolve its scene through the listing again.
+    rec.responses[fb.RPC_OPERATION] = [batch_envelope(fb.RPC_OPERATION, operation_payload(MEDIA))]
     rec.responses[fb.RPC_MEDIA] = [
         batch_envelope(fb.RPC_MEDIA, media_urls_payload(MEDIA))
     ]
     out = await sdk.check_async(["op-1"])
     assert out["operations"][0]["done"] is True
-    assert len(rec.rpcs(fb.RPC_OPERATION)) == 1
+    assert len(rec.rpcs(fb.RPC_PROJECT_MEDIA)) == 1
+    assert rec.payload(fb.RPC_OPERATION) == [None, None, [[MEDIA]]]
 
 
 @pytest.mark.asyncio
 async def test_check_async_ignores_pre_migration_workflow_handles():
     """They cannot be resumed; they must not be polled as operations either."""
     rec = _poll_recorder("op-1")
-    out = await FlowSDK(client=rec).check_async(
+    out = await _sdk_for_poll(rec).check_async(
         ["op-1"], workflows=[{"name": "wf-1", "primary_media_id": "m-1"}],
     )
     assert [op["name"] for op in out["operations"]] == ["op-1"]

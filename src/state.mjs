@@ -45,7 +45,7 @@ export function reconcileJobs(nodes, jobs, canvasId) {
       if(job===existing)return node;
     }
     const data={...node.data,status:job.status,jobId:job.id,jobStartedAt:job.startedAt,progress:job.progress,
-      error:job.error,src:job.src||node.data.src,timings:{...node.data.timings,...job.timings}};
+      error:job.error,receiptError:job.receiptError,src:job.src||node.data.src,timings:{...node.data.timings,...job.timings}};
     return JSON.stringify(data)===JSON.stringify(node.data)?node:{...node,data};
   });
   return result.every((node,index)=>node===nodes[index])?nodes:result;

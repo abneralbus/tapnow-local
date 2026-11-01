@@ -247,7 +247,30 @@ def _is_request_canceled(rid: Optional[int]) -> bool:
         return req.status == "canceled"
 
 
+def _persist_video_progress(params: dict, dispatch: dict, poll: Optional[dict] = None) -> None:
+    """Durable remote handle before polling; never store a completed job as empty."""
+    rid = params.get("__request_id")
+    if not isinstance(rid, int):
+        return
+    with get_session() as session:
+        req = session.get(Request, rid)
+        if req is None or req.status not in ("running", "canceled"):
+            return
+        result = dict(req.result or {})
+        result.update(raw_dispatch=dispatch, operation_names=dispatch.get("operation_names", []))
+        if poll is not None:
+            result.update(last_poll=poll, last_poll_at=datetime.now(timezone.utc).isoformat())
+        req.result = result
+        session.add(req)
+        session.commit()
+
+
 async def _handle_gen_video(params: dict) -> tuple[dict, Optional[str]]:
+    if params.get("__resume_dispatch"):
+        sdk = get_flow_sdk()
+        dispatch = params["__resume_dispatch"]
+        sdk.restore_video_dispatch(dispatch, params.get("project_id"))
+        return await _poll_video_dispatch(params, dispatch, sdk)
     from flowboard.services.flow_sdk import is_valid_project_id
 
     prompt = params.get("prompt")
@@ -319,6 +342,11 @@ async def _handle_gen_video(params: dict) -> tuple[dict, Optional[str]]:
     if dispatch.get("error"):
         return dispatch, str(dispatch["error"])[:200]
 
+    return await _poll_video_dispatch(params, dispatch, sdk)
+
+
+async def _poll_video_dispatch(params: dict, dispatch: dict, sdk) -> tuple[dict, Optional[str]]:
+    _persist_video_progress(params, dispatch)
     op_names = dispatch.get("operation_names") or []
     if not op_names:
         return dispatch, "no_operations_returned"
@@ -364,6 +392,7 @@ async def _handle_gen_video(params: dict) -> tuple[dict, Optional[str]]:
                 "canceled",
             )
         last_poll = await sdk.check_async(op_names, workflows=workflows)
+        _persist_video_progress(params, dispatch, last_poll)
         if last_poll.get("error"):
             continue
         for op in last_poll.get("operations") or []:
@@ -483,6 +512,7 @@ async def _handle_gen_video(params: dict) -> tuple[dict, Optional[str]]:
             "op_errors": op_errors,
             "slot_errors": slot_errors,
             "partial_error": partial_error,
+            **({"duration_s": params["duration_s"]} if "duration_s" in params else {}),
         },
         None,
     )
@@ -571,6 +601,11 @@ async def _handle_edit_image(params: dict) -> tuple[dict, Optional[str]]:
 # op + first-error-wins, simpler than _handle_gen_video.
 
 async def _handle_gen_video_omni(params: dict) -> tuple[dict, Optional[str]]:
+    if params.get("__resume_dispatch"):
+        sdk = get_flow_sdk()
+        dispatch = params["__resume_dispatch"]
+        sdk.restore_video_dispatch(dispatch, params.get("project_id"))
+        return await _poll_video_dispatch(params, dispatch, sdk)
     from flowboard.services.flow_sdk import is_valid_project_id
     from flowboard.services.media_project_sync import (
         MediaSyncError,
@@ -664,126 +699,7 @@ async def _handle_gen_video_omni(params: dict) -> tuple[dict, Optional[str]]:
     if dispatch.get("error"):
         return dispatch, str(dispatch["error"])[:200]
 
-    op_names = dispatch.get("operation_names") or []
-    if not op_names:
-        return dispatch, "no_operations_returned"
-    workflows = dispatch.get("workflows") or None
-
-    poll_attempts = 0
-    last_poll: dict = {}
-    done_by_name: dict[str, bool] = {name: False for name in op_names}
-    entry_by_name: dict[str, dict] = {}
-    op_errors: dict[str, str] = {}
-    rid = params.get("__request_id")
-
-    while (
-        poll_attempts < VIDEO_POLL_MAX_CYCLES
-        and not all(done_by_name.values())
-    ):
-        await asyncio.sleep(VIDEO_POLL_INTERVAL_S)
-        poll_attempts += 1
-        if _is_request_canceled(rid):
-            return (
-                {
-                    "raw_dispatch": dispatch,
-                    "last_poll": last_poll,
-                    "operation_names": op_names,
-                    "done": done_by_name,
-                    "canceled": True,
-                },
-                "canceled",
-            )
-        last_poll = await sdk.check_async(op_names, workflows=workflows)
-        if last_poll.get("error"):
-            continue
-        for op in last_poll.get("operations") or []:
-            if not isinstance(op, dict):
-                continue
-            name = op.get("name")
-            if not isinstance(name, str) or done_by_name.get(name, False):
-                continue
-            err = op.get("error")
-            if isinstance(err, str) and err:
-                done_by_name[name] = True
-                op_errors[name] = err
-                continue
-            if op.get("done"):
-                done_by_name[name] = True
-                for e in op.get("media_entries") or []:
-                    if isinstance(e, dict) and e.get("media_id"):
-                        entry_by_name[name] = e
-                        break
-
-    for name in op_names:
-        if not done_by_name.get(name) and name not in op_errors:
-            op_errors[name] = "timeout_waiting_video"
-
-    positional_ids: list[Optional[str]] = []
-    slot_errors: list[Optional[str]] = []
-    succeeded_entries: list[dict] = []
-    for name in op_names:
-        e = entry_by_name.get(name)
-        if isinstance(e, dict) and isinstance(e.get("media_id"), str):
-            positional_ids.append(e["media_id"])
-            succeeded_entries.append(e)
-            slot_errors.append(None)
-        else:
-            positional_ids.append(None)
-            slot_errors.append(op_errors.get(name))
-
-    if not any(positional_ids):
-        first_err = next(iter(op_errors.values()), "timeout_waiting_video")
-        return (
-            {
-                "raw_dispatch": dispatch,
-                "last_poll": last_poll,
-                "operation_names": op_names,
-                "done": done_by_name,
-                "op_errors": op_errors,
-            },
-            first_err,
-        )
-
-    entries_with_urls = [
-        e for e in succeeded_entries if isinstance(e, dict) and e.get("url")
-    ]
-    if entries_with_urls:
-        try:
-            media_service.ingest_urls(entries_with_urls)
-        except Exception:  # noqa: BLE001
-            logger.exception("auto-ingest from gen_video_omni response failed")
-    # Omni Flash uses workflow-mode polling: Flow delivers the rendered MP4
-    # inline as base64 on `/v1/media/<id>` with no signed GCS URL. Plant the
-    # bytes in the local cache so `/media/<id>` can serve them.
-    for entry in succeeded_entries:
-        if not isinstance(entry, dict):
-            continue
-        encoded = entry.get("encoded_video")
-        mid = entry.get("media_id")
-        if not isinstance(encoded, str) or not isinstance(mid, str):
-            continue
-        try:
-            import base64 as _b64
-            media_service.ingest_inline_bytes(
-                mid, _b64.b64decode(encoded, validate=False),
-                kind="video", mime="video/mp4",
-            )
-        except Exception:  # noqa: BLE001
-            logger.exception("inline ingest from omni workflow poll failed for %s", mid)
-
-    return (
-        {
-            "raw_dispatch": dispatch,
-            "last_poll": last_poll,
-            "operation_names": op_names,
-            "media_ids": positional_ids,
-            "media_entries": succeeded_entries,
-            "op_errors": op_errors,
-            "slot_errors": slot_errors,
-            "duration_s": duration_s,
-        },
-        None,
-    )
+    return await _poll_video_dispatch(params, dispatch, sdk)
 
 
 _DEFAULT_HANDLERS: dict[str, Handler] = {
@@ -1167,6 +1083,10 @@ class WorkerController:
                 # Long-running handlers re-check this rid between polls
                 # to honor user-initiated cancels.
                 params["__request_id"] = rid
+                params.pop("__resume_dispatch", None)
+                dispatch = (req.result or {}).get("raw_dispatch", {})
+                if req.type in ("gen_video", "gen_video_omni") and dispatch.get("operation_names"):
+                    params["__resume_dispatch"] = dispatch
 
             # Release the session during the possibly-long RPC.
             result, err = await handler(params)

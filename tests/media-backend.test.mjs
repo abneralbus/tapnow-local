@@ -10,7 +10,7 @@ import {reconcileJobs} from '../src/state.mjs';
 
 const root=path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
-async function until(fn){for(let n=0;n<120;n++){const value=await fn();if(value)return value;await wait(50);}throw new Error('Timed out');}
+async function until(fn,attempts=120){for(let n=0;n<attempts;n++){const value=await fn();if(value)return value;await wait(50);}throw new Error('Timed out');}
 async function start(data,base){
   const child=spawn(process.execPath,['server/index.mjs','--production'],{cwd:root,env:{...process.env,PORT:'0',DATA_DIR:data,FLOWBOARD_BASE_URL:base,MUSE2API_BASE_URL:base,MUSE2API_API_KEY:'backend-fixture-key'},stdio:['ignore','pipe','pipe']});
   let output='';child.stdout.on('data',b=>output+=b);child.stderr.on('data',b=>output+=b);
@@ -38,7 +38,7 @@ test('image jobs persist, publish completed SSE, recover after restart, and reje
       return json({id:isFlow?id:String(id)});
     }
     const match=req.url.match(/^\/(?:api\/requests|v1\/images\/generations)\/(\d+)$/);
-    if(match){const record=records.get(match[1]);record.polls++;const running=(record.prompt==='hold'&&hold)||record.polls<2;
+    if(match){const record=records.get(match[1]);record.polls++;if(record.prompt==='transient-outage'&&record.polls<=4)return json({error:'temporary bridge restart'},503);const running=(record.prompt==='hold'&&hold)||record.polls<2;
       return json({status:running?'running':record.provider==='flow'?'done':'succeeded',result:record.provider==='flow'?{media_ids:[match[1]]}:{data:[{url:'/v1/media/'+match[1]}]}});
     }
     const media=req.url.match(/^\/(?:media|v1\/media)\/(\d+)$/);
@@ -75,5 +75,9 @@ test('image jobs persist, publish completed SSE, recover after restart, and reje
   assert.deepEqual(await readFile(path.join(data,resumedResult.src)),png);assert.equal(submits,2,'restart must not resubmit a generation');assert.equal((await job(good.id)).src,completed.src);
   const bad=await submit('muse','corrupt','image-bad');await until(async()=> (await job(bad.id)).status==='failed');
   assert.equal((await job(bad.id)).src,undefined);assert.ok(!(await readdir(path.join(data,'media'))).some(file=>file.includes(bad.id)||file.endsWith('.part')));
+  const beforeOutage=submits;
+  const outage=await submit('flow','transient-outage','flow-outage');
+  const reconnected=await until(async()=>{const value=await job(outage.id);return value.status==='completed'&&value;},240);
+  assert.ok(reconnected.src);assert.equal(submits,beforeOutage+1,'four transient poll errors must not fail or resubmit the generation');
   assert.ok(!JSON.stringify((await call('/api/jobs')).body).includes('backend-fixture-key'));
 });

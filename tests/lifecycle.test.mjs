@@ -48,6 +48,7 @@ test('idle waits for actual generation completion and persists downloaded result
   // Header-only protocol fixture, not a generated or playable video.
   const media=Buffer.from([0,0,0,20,...Buffer.from('ftypisom00000000')]);
   const upstream=await fixture(t,async(req,res)=>{
+    if(req.url==='/v1/session')return json(res,{},404);
     if(req.method==='POST'){for await(const _ of req){}return json(res,{id:'video_fixture'});}
     if(req.url.endsWith('/content')){res.writeHead(200,{'Content-Type':'video/mp4'});return res.end(media);}
     json(res,{status:release?'completed':'in_progress'});

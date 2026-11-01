@@ -66,11 +66,16 @@ export async function submitMedia(input,data,connection){
   const r=await(await request(connection.museUrl,input.kind==='image'?'/v1/images/generations':'/v1/videos',{...json(body),signal:AbortSignal.timeout(45000)},key)).json();
   if(typeof r.id!=='string'||!r.id||r.id.length>200)throw new Error('Muse 返回无效任务标识');return r.id;
 }
+export function flowErrorMessage(error){
+  const code=String(error||'').slice(0,300);
+  const labels={PUBLIC_ERROR_MINOR:'Flow 拒绝生成：未成年人相关安全限制，请检查参考图和提示词',CHILD_SAFETY:'Flow 拒绝生成：未成年人相关安全限制，请检查参考图和提示词',PUBLIC_ERROR_AUDIO_FILTERED:'Flow 拒绝生成：音频内容未通过审核',PUBLIC_ERROR_UNSAFE_GENERATION:'Flow 拒绝生成：内容未通过安全审核',timeout_waiting_video:'Flow 在等待期限内未完成，未自动重新生成'};
+  return labels[code]?`${labels[code]}（${code}）`:code;
+}
 export async function pollMedia(job,data){
   const input=job.input,c=job.connection,id=encodeURIComponent(job.remoteId);
   if(input.provider==='flow'){
     const r=await(await request(c.bridgeUrl,`/api/requests/${id}`)).json();
-    return {status:({queued:'queued',running:'running',done:'completed',failed:'failed',timeout:'failed',canceled:'cancelled'})[r.status]||'unknown',error:r.error?String(r.error).slice(0,300):undefined,result:r.result};
+    return {status:({queued:'queued',running:'running',done:'completed',failed:'failed',timeout:'failed',canceled:'cancelled'})[r.status]||'unknown',error:r.error?flowErrorMessage(r.error):undefined,result:r.result};
   }
   const r=await(await request(c.museUrl,`${input.kind==='image'?'/v1/images/generations':'/v1/videos'}/${id}`,{},await museKey(data))).json();
   const errors={upstream_access_unavailable:'Muse 当前会话没有可用的创作环境；请先确认 Muse 应用中的访问权限。代理连通不代表已获准使用。',upstream_auth_failed:'Muse 登录会话已失效，请重新登录后更新连接。',upstream_timeout:'Muse 生成超时，未收到素材；请先确认 Muse 创作页能正常使用。'};

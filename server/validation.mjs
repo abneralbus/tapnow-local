@@ -1,3 +1,4 @@
+import {mediaType} from '../shared/h3-references.mjs';
 export function videoRequest(input) {
   if (!input || typeof input !== 'object') throw new Error('无效的视频请求');
   const prompt = typeof input.prompt === 'string' ? input.prompt.trim() : '';
@@ -23,7 +24,7 @@ export function canvasDocument(value) {
     if(node.data.autoTitle!==undefined&&typeof node.data.autoTitle!=='boolean')throw new Error('自动名称格式错误');
     if(node.data.mentions!==undefined&&(!Array.isArray(node.data.mentions)||node.data.mentions.length>80||node.data.mentions.some(m=>!m||typeof m.nodeId!=='string'||typeof m.token!=='string'||!m.token.startsWith('@')||m.token.length>101||!Number.isInteger(m.start)||!Number.isInteger(m.end)||m.start<0||m.end<=m.start)))throw new Error('节点引用标记无效');
     if(node.data.references!==undefined){
-      if(!Array.isArray(node.data.references)||node.data.references.length>8||node.data.references.some(r=>!r||typeof r.src!=='string'||!/^\/media\/[a-zA-Z0-9_-]+\.(png|jpg|jpeg|webp|gif)$/.test(r.src)||!['reference','start','end'].includes(r.role??'reference')||(r.nodeId!==undefined&&typeof r.nodeId!=='string')))throw new Error('图片引用格式错误或素材不属于本地画布');
+      if(!Array.isArray(node.data.references)||node.data.references.length>15||node.data.references.some(r=>!r||typeof r.src!=='string'||!mediaType(r.src)||!['reference','start','end'].includes(r.role??'reference')||(r.nodeId!==undefined&&typeof r.nodeId!=='string')))throw new Error('图片引用格式错误或素材不属于本地画布');
     }
     if(node.data.duration!==undefined&&(!Number.isFinite(node.data.duration)||node.data.duration<1||node.data.duration>60))throw new Error('节点视频时长无效');
     if (node.data.src && !/^\/media\/[a-zA-Z0-9_-]+\.(png|jpg|jpeg|webp|gif|mp4|webm|mov|mp3|wav|ogg|m4a)$/.test(node.data.src)) throw new Error('素材地址必须来自本地素材库');

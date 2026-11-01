@@ -1,4 +1,4 @@
-import React,{useState} from 'react';
+import React,{useState,useEffect} from 'react';
 import {Bot,Image,Sparkles,Server,RefreshCw,LoaderCircle,ExternalLink,Terminal,KeyRound,Check} from 'lucide-react';
 import TextInput from './TextInput.mjs';
 function ServiceCard({icon:Icon,name,model,status,tone,children}){
@@ -7,6 +7,28 @@ function ServiceCard({icon:Icon,name,model,status,tone,children}){
 const groups=[{id:'agent',name:'Agent',detail:'创意 · 对话 · 分镜',icon:Bot},{id:'cloud',name:'云端生成模型',detail:'图像 · 视频',icon:Image},{id:'colab',name:'Colab',detail:'自己的 GPU 服务',icon:Server}];
 export default function ModelConnections({config,setConfig,providers,health,checking,checkHealth,refresh,save,api,json}){
   const [tab,setTab]=useState('agent'),[refreshing,setRefreshing]=useState(false),[form,setForm]=useState(null),[busy,setBusy]=useState(false),[error,setError]=useState(''),[feedback,setFeedback]=useState('');
+  const [session,setSession]=useState(null),[sessionError,setSessionError]=useState(''),[sessionBusy,setSessionBusy]=useState(false),[sessionNotice,setSessionNotice]=useState('');
+  async function loadSession(){try{
+    let current=await api('/colab/session');
+    if(current.phase==='ready'&&typeof config.colabAutoRelease==='boolean'&&current.autoRelease!==config.colabAutoRelease){
+      const applied=await api('/colab/settings',json({autoRelease:config.colabAutoRelease}));
+      if(applied.synced){current=applied;setSessionNotice('已保存到本机并应用到当前会话');}
+      else setSessionNotice('已保存到本机；当前会话尚未确认，下次连接或生成时重试');
+    }
+    setSession(current);setSessionError('');
+  }catch(e){setSession(null);setSessionError(e.message);}}
+  async function saveAutoRelease(enabled){
+    setSessionBusy(true);setSessionError('');
+    try{
+      const result=await api('/colab/settings',json({autoRelease:enabled}));
+      setConfig(old=>({...old,colabAutoRelease:result.autoRelease}));
+      if(result.synced)setSession(result);
+      setSessionNotice(result.synced?'已保存到本机并应用到当前会话':'已保存到本机，下次连接或生成时自动应用');
+    }catch(e){setSessionError(e.message);}finally{setSessionBusy(false);}
+  }
+  const autoRelease=config.colabAutoRelease??session?.autoRelease??false;
+  useEffect(()=>{if(tab==='colab'&&config.colabUrl)loadSession();},[tab,health]);
+  async function sessionAction(route){setSessionBusy(true);setSessionError('');try{const result=await api(route,json({}));if(route.endsWith('/release'))setSession(old=>({...old,phase:result.phase,canRelease:false}));else await loadSession();}catch(e){setSessionError(e.message);}finally{setSessionBusy(false);}}
   const options=config.agentOptions||[],selected=options.find(p=>p.id===config.agentProvider)||options[0],draft=form||{...selected,apiKey:''};
   const flowReady=providers?.bridge?.connected&&providers.bridge.extensionConnected&&providers.bridge.projectConfigured;
   const agentReady=!!config.hasAgent&&config.agentStatus!=='error';
@@ -55,13 +77,20 @@ export default function ModelConnections({config,setConfig,providers,health,chec
       </div>}
       {tab==='colab'&&<div className="colab-service">
     <ServiceCard icon={Server} name="Colab" model="MiniMax H3 · 可选" status={health?.connected?'已连接':health?'未连接':config.colabUrl?'待检测':'未配置'} tone={health?.connected?'success':'pending'}>
-      <div className="service-capabilities"><span>文字生视频</span><span>4 秒 · 768p</span></div>
-      <p>使用你自己的 Colab GPU；图片参考和尾帧尚未适配。</p>
+      <div className="service-capabilities"><span>文字 / 首尾帧视频</span><span>图片 / 视频 / 音频参考</span></div>
+      <p>在 Colab 选择 FL2VA（文字／首尾帧）或 Ref2VA（全能参考）后启动，单卡每次加载一种模式。</p>
       <div className="colab-settings">
         <label>Colab 服务地址<input placeholder="https://your-worker.example.com" value={config.colabUrl||''} onChange={event=>setConfig({...config,colabUrl:event.target.value})}/></label>
         <label>访问 Token<input type="password" autoComplete="off" placeholder={config.hasToken?'已保存，留空则保持':'仅保存在本机后端'} value={config.colabToken||''} onChange={event=>setConfig({...config,colabToken:event.target.value})}/></label>
         <div className="button-row"><button className="primary" disabled={checking} onClick={save}>保存并连接</button><button onClick={checkHealth} disabled={checking}>{checking?<LoaderCircle className="spin" size={15}/>:<RefreshCw size={15}/>}测试连接</button></div>
       </div>
+      <div className="colab-session"><label><input type="checkbox" checked={!!autoRelease} disabled={sessionBusy} onChange={event=>saveAutoRelease(event.target.checked)}/>结果保存后自动释放 GPU</label>
+        <p>{autoRelease?(session?.autoRelease?`全部任务结束且结果保存确认后，闲置 ${session.idleSeconds} 秒自动释放 GPU`:'已启用；下次连接或生成时自动应用，全部结果保存确认后按会话闲置时间释放 GPU'):'自动释放未启用'}</p>
+        {sessionNotice&&<p role="status">{sessionNotice}</p>}
+      </div>
+      {session&&<div className="colab-session"><p>当前模式：{session.variant==='ref2va'?'Ref2VA · 全能参考':'FL2VA · 文字／首尾帧'} · {session.phase==='ready'?'就绪':'正在释放 GPU'}</p><p>待确认任务 {session.pendingResults}</p><div className="button-row"><button disabled={sessionBusy} onClick={()=>sessionAction('/colab/receipts')}>重新确认本地结果</button><button disabled={sessionBusy||!session.canRelease} onClick={()=>sessionAction('/colab/release')}>结束会话并释放 GPU</button><button disabled={sessionBusy} onClick={loadSession}>刷新会话</button></div></div>}
+      {session?.releaseError&&<p className="service-error">释放 GPU 失败，请检查 Colab：{session.releaseError}</p>}
+      {sessionError&&<p className="service-error">{sessionError}</p>}
       {health&&<p className={health.connected?'service-detail':'service-error'}>{health.connected?`${health.gpu||'GPU'} · 往返 ${health.roundTripMs}ms`:health.error}{health.model?` · ${health.model}`:''}</p>}
     </ServiceCard>
       </div>}

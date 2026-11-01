@@ -31,27 +31,10 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(na
 
 
 def _recover_orphan_running_requests() -> int:
-    """Fail every request a restart orphaned, so nothing is left to poll.
+    """Resume checkpointed videos by polling their existing remote handles.
 
-    Both in-flight statuses are orphaned by a restart, for different
-    reasons. A `running` row lost the handler that was driving it. A
-    `queued` row lost its *consumer*: the worker's queue is an in-process
-    ``asyncio.Queue`` filled only by ``enqueue()`` at dispatch time, and
-    nothing replays it at boot — so a queued row that survives a restart
-    has no path to ever being picked up. `ACTIVE_REQUEST_STATUSES` in
-    routes/boards.py counts both as in-flight, which means a reloaded
-    board would hand those dead rows to the browser and spin on them
-    forever.
-
-    Deliberately NOT re-enqueued. Every generation type here dispatches a
-    paid Flow job, and we cannot tell from the row whether the dispatch
-    already went out before the process died; replaying it risks
-    double-firing. Failing loud and letting the user re-run is the safe
-    direction.
-
-    The two get distinct `error` strings so the activity feed can tell
-    "never started" from "died mid-run" — only the latter may have burned
-    credits upstream.
+    Never replay generation. Uncheckpointed jobs remain ambiguous and fail
+    explicitly; canceled/terminal jobs are untouched.
     """
     from datetime import datetime, timezone
     from sqlmodel import select as _select
@@ -63,6 +46,15 @@ def _recover_orphan_running_requests() -> int:
         ).all()
         node_ids = set()
         for r in rows:
+            dispatch = (r.result or {}).get("raw_dispatch", {})
+            if r.type in ("gen_video", "gen_video_omni") and dispatch.get("operation_names"):
+                r.status = "queued"
+                r.error = None
+                r.finished_at = None
+                s.add(r)
+                get_worker().enqueue(r.id)
+                touched += 1
+                continue
             r.error = (
                 "agent_restart_never_started"
                 if r.status == "queued"
@@ -93,7 +85,7 @@ async def lifespan(app: FastAPI):
     init_db()
     recovered = _recover_orphan_running_requests()
     if recovered:
-        logger.info("recovered %d orphan in-flight request(s) → failed", recovered)
+        logger.info("recovered %d orphan in-flight request(s) (video handles resume read-only)", recovered)
     worker = get_worker()
     ws_task = asyncio.create_task(run_ws_server(), name="ext-ws-server")
     worker_task = asyncio.create_task(worker.start(), name="request-worker")

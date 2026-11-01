@@ -5,7 +5,7 @@ import {mkdtemp,mkdir,writeFile,rm,truncate} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {generationRequest} from '../server/media-request.mjs';
-import {submitMedia,pollMedia,mediaContent,flowPayload,providerStatus,mediaConnection,imageMime} from '../server/media-providers.mjs';
+import {submitMedia,pollMedia,flowErrorMessage,mediaContent,flowPayload,providerStatus,mediaConnection,imageMime} from '../server/media-providers.mjs';
 
 test('generation validation rejects unsupported media modes instead of silently dropping references',()=>{
   const image={src:'/media/first.png',role:'reference'},start={...image,role:'start'},end={src:'/media/end.png',role:'end'};
@@ -16,7 +16,7 @@ test('generation validation rejects unsupported media modes instead of silently 
   assert.throws(()=>generationRequest({...flowVideo,model:'omni'}),/参考图模式/);
   assert.throws(()=>generationRequest({...flowVideo,mode:'reference',references:[image]}),/首帧模式/);
   assert.throws(()=>generationRequest({...flowVideo,provider:'muse',model:'muse-video',duration:4}),/不能锁定首尾帧/);
-  assert.throws(()=>generationRequest({provider:'colab',prompt:'move',references:[image],mode:'reference'}));
+  assert.equal(generationRequest({provider:'colab',prompt:'move',references:[image],mode:'reference'}).references[0].type,'image');
   assert.throws(()=>generationRequest({provider:'muse',kind:'image',prompt:'x',references:Array.from({length:5},(_,i)=>({src:`/media/${i}.png`,role:'reference'}))}));
   assert.throws(()=>generationRequest({provider:'muse',kind:'image',prompt:'x',references:[{src:'https://other.example/private.png'}]}));
   assert.throws(()=>generationRequest({provider:'muse',kind:'image',prompt:'x',model:'unsupported'}));
@@ -119,4 +119,10 @@ test('Flow and Muse local HTTP contracts, references, results, and credential bo
   await assert.rejects(()=>mediaContent(job(flowImage,flowId),{},data),/没有返回可下载/);
   flowProject=null;await assert.rejects(()=>submitMedia(input({}),data,connection),/未配置项目/);
   process.env.FLOWBOARD_BASE_URL='https://external.example';assert.throws(mediaConnection,/本机 HTTP/);
+});
+
+test('Flow failures preserve the real code and explain the cause',()=>{
+  assert.match(flowErrorMessage('PUBLIC_ERROR_MINOR'),/未成年人.*PUBLIC_ERROR_MINOR/);
+  assert.match(flowErrorMessage('timeout_waiting_video'),/未自动重新生成/);
+  assert.equal(flowErrorMessage('new_upstream_error'),'new_upstream_error');
 });
