@@ -3,7 +3,7 @@ import {referencePrompt} from '../shared/reference-prompt.mjs';
 import {videoRequest} from './validation.mjs';
 
 export const providerCatalog=[
-  {id:'colab',label:'MiniMax H3 · Colab',imageModels:[],videoModels:[{id:'MiniMaxAI/MiniMax-H3',label:'MiniMax H3 标准'}]},
+  {id:'colab',label:'MiniMax H3 · Colab',imageModels:[],videoModels:[{id:'MiniMaxAI/MiniMax-H3',label:'MiniMax H3 · 跟随 Colab 会话'}]},
   {id:'flow',label:'Google Flow',imageModels:[{id:'NANO_BANANA_PRO',label:'Nano Banana Pro'},{id:'NANO_BANANA_2',label:'Nano Banana 2'},{id:'NANO_BANANA_2_1',label:'Nano Banana 2.1'},{id:'NANO_BANANA_2_LITE',label:'Nano Banana 2 Lite'}],videoModels:[{id:'veo-fast',label:'Veo 3.1 Fast · 首帧'},{id:'omni',label:'Omni Flash · 多图参考'}]},
   {id:'muse',label:'Muse',imageModels:[{id:'muse-image',label:'Muse Image'}],videoModels:[{id:'muse-video',label:'Muse Video'}]}
 ];

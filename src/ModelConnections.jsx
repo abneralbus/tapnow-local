@@ -81,6 +81,7 @@ export default function ModelConnections({config,setConfig,providers,health,chec
       <p>在 Colab 选择 FL2VA（文字／首尾帧）或 Ref2VA（全能参考）后启动，单卡每次加载一种模式。</p>
       <div className="colab-settings">
         <label>Colab 服务地址<input placeholder="https://your-worker.example.com" value={config.colabUrl||''} onChange={event=>setConfig({...config,colabUrl:event.target.value})}/></label>
+        <label>Colab 笔记本地址<input placeholder="https://colab.research.google.com/drive/…" value={config.colabNotebookUrl||''} onChange={event=>setConfig({...config,colabNotebookUrl:event.target.value})}/></label>
         <label>访问 Token<input type="password" autoComplete="off" placeholder={config.hasToken?'已保存，留空则保持':'仅保存在本机后端'} value={config.colabToken||''} onChange={event=>setConfig({...config,colabToken:event.target.value})}/></label>
         <div className="button-row"><button className="primary" disabled={checking} onClick={save}>保存并连接</button><button onClick={checkHealth} disabled={checking}>{checking?<LoaderCircle className="spin" size={15}/>:<RefreshCw size={15}/>}测试连接</button></div>
       </div>
@@ -88,7 +89,7 @@ export default function ModelConnections({config,setConfig,providers,health,chec
         <p>{autoRelease?(session?.autoRelease?`全部任务结束且结果保存确认后，闲置 ${session.idleSeconds} 秒自动释放 GPU`:'已启用；下次连接或生成时自动应用，全部结果保存确认后按会话闲置时间释放 GPU'):'自动释放未启用'}</p>
         {sessionNotice&&<p role="status">{sessionNotice}</p>}
       </div>
-      {session&&<div className="colab-session"><p>当前模式：{session.variant==='ref2va'?'Ref2VA · 全能参考':'FL2VA · 文字／首尾帧'} · {session.phase==='ready'?'就绪':'正在释放 GPU'}</p><p>待确认任务 {session.pendingResults}</p><div className="button-row"><button disabled={sessionBusy} onClick={()=>sessionAction('/colab/receipts')}>重新确认本地结果</button><button disabled={sessionBusy||!session.canRelease} onClick={()=>sessionAction('/colab/release')}>结束会话并释放 GPU</button><button disabled={sessionBusy} onClick={loadSession}>刷新会话</button></div></div>}
+      {session&&<div className="colab-session"><p>当前模式：{session.profile==='ref2va-turbo-4step'?'Ref2VA Turbo · 全能参考 · 4 步 · 544p':session.variant==='ref2va'?'Ref2VA · 全能参考':'FL2VA · 文字／首尾帧'} · {session.phase==='ready'?'就绪':'正在释放 GPU'}</p><p>待确认任务 {session.pendingResults}</p><div className="button-row"><button disabled={sessionBusy} onClick={()=>sessionAction('/colab/receipts')}>重新确认本地结果</button><button disabled={sessionBusy||!session.canRelease} onClick={()=>sessionAction('/colab/release')}>结束会话并释放 GPU</button><button disabled={sessionBusy} onClick={loadSession}>刷新会话</button></div></div>}
       {session?.releaseError&&<p className="service-error">释放 GPU 失败，请检查 Colab：{session.releaseError}</p>}
       {sessionError&&<p className="service-error">{sessionError}</p>}
       {health&&<p className={health.connected?'service-detail':'service-error'}>{health.connected?`${health.gpu||'GPU'} · 往返 ${health.roundTripMs}ms`:health.error}{health.model?` · ${health.model}`:''}</p>}

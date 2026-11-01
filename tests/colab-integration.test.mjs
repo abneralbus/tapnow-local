@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
 import {spawn} from 'node:child_process';
-import {mkdtemp,readFile,readdir,rm} from 'node:fs/promises';
+import {mkdtemp,readFile,readdir,rm,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -60,4 +60,29 @@ test('Colab upload → submit → durable local file → receipt; reject wrong m
  variant='fl2va';await call('/jobs',{...request,requestId:'request2'});
  const failed=await until(async()=>{const jobs=(await call('/jobs')).body;return jobs.find(j=>j.requestId==='request2'&&j.status==='failed');});
  assert.match(failed.error,/Ref2VA/);assert.equal(uploads,1);assert.equal(receipts,1);
+});
+
+
+test('an existing Colab job older than 30 minutes keeps polling without resubmission',async t=>{
+ const data=await mkdtemp(path.join(tmpdir(),'tapnow-long-colab-'));
+ let polls=0,submits=0,receipts=0;
+ const video=Buffer.concat([Buffer.from([0,0,0,20]),Buffer.from('ftypisom00000000')]);
+ const fake=createServer(async(req,res)=>{
+  const json=body=>{res.setHeader('Content-Type','application/json');res.end(JSON.stringify(body));};
+  if(req.method==='POST'&&req.url==='/v1/videos'){submits++;return json({id:'duplicate'});}
+  if(req.url==='/v1/videos/existing'){polls++;return json({status:polls<2?'in_progress':'completed',progress:20});}
+  if(req.url==='/v1/videos/existing/content'){res.setHeader('Content-Type','video/mp4');return res.end(video);}
+  if(req.url==='/v1/videos/existing/receipt'){for await(const _ of req){}receipts++;return json({saved:true});}
+  res.statusCode=404;json({});
+ });
+ await new Promise(r=>fake.listen(0,'127.0.0.1',r));
+ const old=Date.now()-40*60*1000;
+ await writeFile(path.join(data,'jobs.json'),JSON.stringify([{id:'long-job',remoteId:'existing',colabSessionId:'session',provider:'colab',status:'running',startedAt:old,submittedAt:old,timings:{},input:{provider:'colab'},connection:{colabUrl:`http://127.0.0.1:${fake.address().port}`,colabToken:'fixture'}}]));
+ const child=spawn(process.execPath,['server/index.mjs','--production'],{cwd:root,env:{...process.env,PORT:'0',DATA_DIR:data,TAPNOW_STARTUP_IDLE_MS:'0'},stdio:['ignore','pipe','pipe']});
+ let output='';child.stdout.on('data',v=>output+=v);child.stderr.on('data',v=>output+=v);
+ t.after(async()=>{if(child.exitCode===null){const done=new Promise(r=>child.once('exit',r));child.kill();await done;}fake.closeAllConnections();await new Promise(r=>fake.close(r));await rm(data,{recursive:true,force:true});});
+ await until(()=>{if(child.exitCode!==null)throw Error(output);return receipts===1;});
+ assert.equal(submits,0);assert.ok(polls>=2);
+ const saved=await until(async()=>{const jobs=JSON.parse(await readFile(path.join(data,'jobs.json'),'utf8'));return jobs.find(j=>j.receiptSaved);});
+ assert.equal(saved.remoteId,'existing');assert.equal(saved.status,'completed');assert.equal(saved.startedAt,old);
 });

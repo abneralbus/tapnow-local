@@ -17,7 +17,9 @@ _processes = []
 _watcher = None
 
 
-def prepare(variant='fl2va', allow_download=False, install_env=False):
+def prepare(variant='fl2va', allow_download=False, install_env=False, profile='standard'):
+    if profile not in ('standard', 'ref2va-turbo-4step') or (profile != 'standard' and variant != 'ref2va'):
+        raise ValueError('Unsupported model profile')
     if variant not in ('fl2va', 'ref2va'):
         raise ValueError('Select fl2va or ref2va')
     if not DRIVE.parent.is_dir():
@@ -44,6 +46,8 @@ def prepare(variant='fl2va', allow_download=False, install_env=False):
     if not allow_download:
         command.append('--restore-only')
     subprocess.run(command, check=True)
+    if profile == 'ref2va-turbo-4step':
+        subprocess.run([str(python), str(ROOT/'prepare_ref2va_turbo.py')], check=True)
     # Keep deployment helpers current without copying tokens, notebooks' outputs, or private config.
     deployment = DRIVE/'deployment'
     deployment.mkdir(parents=True, exist_ok=True)
@@ -59,13 +63,15 @@ def release_runtime():
     runtime.unassign()
 
 
-def start(variant, token, auto_release=True, idle_seconds=60, open_tunnel=True):
+def start(variant, token, auto_release=True, idle_seconds=60, open_tunnel=True, profile='standard'):
+    if profile not in ('standard', 'ref2va-turbo-4step') or (profile != 'standard' and variant != 'ref2va'):
+        raise ValueError('Unsupported model profile')
     global _watcher
     if _processes or (STATE/'session.json').exists():
         raise RuntimeError('Session already started; do not run the start cell twice')
     if len(token)<32:
         raise ValueError('Use a temporary token with at least 32 characters')
-    env = {**os.environ,'H3_VARIANT':variant,'H3_PROXY_TOKEN':token,
+    env = {**os.environ,'H3_VARIANT':variant,'H3_PROFILE':profile,'H3_PROXY_TOKEN':token,
            'H3_AUTO_RELEASE':'yes' if auto_release else 'no','H3_IDLE_SECONDS':str(idle_seconds)}
     def launch(command, name):
         with open('/content/h3-'+name+'.log','w') as log:
@@ -86,7 +92,8 @@ def start(variant, token, auto_release=True, idle_seconds=60, open_tunnel=True):
             time.sleep(3)
         raise TimeoutError('Service did not become ready; inspect logs before retrying')
     try:
-        model=launch(['bash',str(ROOT/'start_model.sh')],'model')
+        model_script = 'start_ref2va_turbo_benchmark.sh' if profile == 'ref2va-turbo-4step' else 'start_model.sh'
+        model=launch(['bash',str(ROOT/model_script)],'model')
         wait_ready('http://127.0.0.1:30020/health',model)
         proxy=launch(['/content/h3-venv/bin/python',str(ROOT/'session_service.py')],'proxy')
         wait_ready('http://127.0.0.1:30011/v1/session',proxy,{'Authorization':'Bearer '+token},timeout=60)

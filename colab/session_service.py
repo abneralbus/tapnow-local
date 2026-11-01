@@ -15,7 +15,9 @@ JOB = re.compile(r'[A-Za-z0-9_-]{1,100}')
 
 
 class Session:
-    def __init__(self, root, variant, auto_release=False, idle_seconds=60):
+    def __init__(self, root, variant, auto_release=False, idle_seconds=60, profile='standard'):
+        if profile not in ('standard', 'ref2va-turbo-4step') or (profile != 'standard' and variant != 'ref2va'):
+            raise ValueError('Unsupported model profile')
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.assets = self.root/'assets'
@@ -25,10 +27,10 @@ class Session:
         self.idle_seconds = max(30, idle_seconds)
         if self.file.exists():
             self.data = json.loads(self.file.read_text())
-            if self.data['variant'] != variant:
+            if self.data['variant'] != variant or self.data.get('profile', 'standard') != profile:
                 raise RuntimeError('Finish and release the previous session before changing model mode')
         else:
-            self.data = dict(id=uuid.uuid4().hex, variant=variant, autoRelease=auto_release,
+            self.data = dict(id=uuid.uuid4().hex, variant=variant, profile=profile, autoRelease=auto_release,
                              phase='ready', jobs={}, lastActivity=time.time())
             self.save()
 
@@ -57,7 +59,7 @@ class Session:
 
     def status(self):
         jobs = self.data['jobs'].values()
-        return dict(sessionId=self.data['id'], variant=self.data['variant'], phase=self.data['phase'],
+        return dict(profile=self.data.get('profile', 'standard'), sessionId=self.data['id'], variant=self.data['variant'], phase=self.data['phase'],
                     tasks=['ref2va'] if self.data['variant']=='ref2va' else ['t2va', 'fl2va'],
                     autoRelease=self.data['autoRelease'], idleSeconds=self.idle_seconds,
                     pendingResults=sum(not j.get('acknowledged') and j['status']!='failed' for j in jobs),
@@ -65,7 +67,7 @@ class Session:
                     releaseError=json.loads((self.root/'release-error.json').read_text()).get('error') if (self.root/'release-error.json').exists() else None)
 
 
-def create_app(root='/content/tapnow-h3-state', variant=None, token=None, transport=None):
+def create_app(root='/content/tapnow-h3-state', variant=None, token=None, transport=None, profile=None):
     import httpx
     from fastapi import FastAPI, Request
     from fastapi.responses import JSONResponse, StreamingResponse
@@ -76,7 +78,8 @@ def create_app(root='/content/tapnow-h3-state', variant=None, token=None, transp
     if variant not in ('fl2va', 'ref2va'):
         raise RuntimeError('Unsupported model variant')
     state = Session(root, variant, os.environ.get('H3_AUTO_RELEASE')=='yes',
-                    int(os.environ.get('H3_IDLE_SECONDS', '60')))
+                    int(os.environ.get('H3_IDLE_SECONDS', '60')),
+                    profile=profile or os.environ.get('H3_PROFILE', 'standard'))
 
     @asynccontextmanager
     async def lifespan(app):
@@ -192,6 +195,13 @@ def create_app(root='/content/tapnow-h3-state', variant=None, token=None, transp
                 value = json.loads(body)
                 if value.get('task') not in state.status()['tasks']:
                     return JSONResponse({'error': 'Model mode mismatch; select the matching mode in Colab'}, 409)
+                if state.data.get('profile') == 'ref2va-turbo-4step':
+                    if value.get('target', {}).get('short_edge') != 544:
+                        return JSONResponse({'error': 'Ref2VA Turbo currently requires 544p'}, 400)
+                    if value.get('num_inference_steps') != 4:
+                        return JSONResponse({'error': 'Ref2VA Turbo requires 4 inference steps'}, 400)
+                    value.update(reference_resize_mode='match', flow_shift=12,
+                                 audio_flow_shift=3, quality='lossless')
                 conditions = value.get('conditions', [])
                 if not isinstance(conditions, list) or len(conditions)>12:
                     return JSONResponse({'error': 'Invalid conditions'}, 400)

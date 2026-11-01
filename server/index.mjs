@@ -1,4 +1,5 @@
 import {prepareColab} from './colab-client.mjs';
+import {colabNotebookUrl} from '../shared/colab-notebook.mjs';
 import express from 'express';
 import {createVideoFrames} from './video-frame.mjs';
 import { createServer } from 'node:http';
@@ -49,12 +50,13 @@ const drainCanvases=installCanvasLibrary(app,data,{
     try{await saveJobs();}catch(error){for(const job of removed){jobs.set(job.id,job);if(job.requestId)requests.set(job.requestId,job.id);}throw error;}
   }
 });
-app.get('/api/config',async(req,res) => res.json({colabUrl:config.colabUrl,hasToken:!!config.colabToken,colabAutoRelease:config.colabAutoRelease,...await agentConfiguration(data)}));
+app.get('/api/config',async(req,res) => res.json({colabNotebookUrl:config.colabNotebookUrl||'',colabUrl:config.colabUrl,hasToken:!!config.colabToken,colabAutoRelease:config.colabAutoRelease,...await agentConfiguration(data)}));
 app.get('/api/providers',async(req,res)=>res.json(await providerStatus(data)));
 app.put('/api/agent/config',async(req,res)=>{if(activeAgentRequests)return res.status(409).json({error:'Agent 正在回复，请等待完成后切换配置。'});await writeAgentSettings(data,req.body);res.json(await agentConfiguration(data));});
 app.post('/api/agent/test',async(req,res)=>{activeAgentRequests++;checkIdle();const start=performance.now();try{const result=await agentChat(data,{prompt:'请只回复：连接正常。'});res.json({text:result.text.slice(0,300),elapsedMs:Math.round(performance.now()-start),...await agentConfiguration(data)});}finally{activeAgentRequests--;checkIdle();}});
 app.put('/api/config',async(req,res) => {
   const next={...config,colabUrl:endpoint(req.body.colabUrl),colabToken:typeof req.body.colabToken==='string' && req.body.colabToken ? req.body.colabToken : config.colabToken};
+  if(req.body.colabNotebookUrl!==undefined)next.colabNotebookUrl=colabNotebookUrl(req.body.colabNotebookUrl);
   if(next.colabToken.length>1024)throw new Error('Token 过长');
   await saveJSON(path.join(data,'config.json'),next);config=next;res.json({saved:true});
 });
@@ -129,13 +131,17 @@ function launch(job){const operation=(job.input.provider&&job.input.provider!=='
   await record(job).catch(e=>console.error('保存任务失败:',e.message));
 }).finally(()=>{activeRuns.delete(operation);checkIdle();});activeRuns.add(operation);checkIdle();}
 async function run(job){
-  const current=job.connection,deadline=job.startedAt+30*60*1000;
+  const current=job.connection;
+  // A healthy remote job may take hours; retain its ID and keep receiving it.
+  // Request timeouts and terminal upstream states still stop failed monitors.
   if(!job.remoteId){
     if(job.status==='cancelled')return;
     const prepared=await prepareColab(job.input,remote,current,media);
     if(job.status==='cancelled')return;
     // Persist before dispatch so a crash never causes an automatic duplicate GPU job.
     job.colabSessionId=prepared.sessionId;
+    job.colabProfile=prepared.profile;
+    job.input.steps=prepared.body.num_inference_steps;
     job.submittedAt=Date.now();await saveJobs();
     const response=await remote('/v1/videos',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(prepared.body)},current);
     const remoteJob=await response.json();
@@ -149,7 +155,6 @@ async function run(job){
     catch(error){if(error.upstreamStatus===404)throw new Error('远端任务不存在，Colab 服务可能已重启');if(++failures>=3||[401,403].includes(error.upstreamStatus))throw error;await new Promise(resolve=>setTimeout(resolve,1000));continue;}
     if(!['queued','in_progress','completed','failed'].includes(info.status))throw new Error('Colab 返回未知任务状态');
     const terminal=['completed','failed'].includes(info.status);
-    if(!terminal&&Date.now()>deadline)throw new Error('等待结果超过 30 分钟');
     if(terminal){job.upstreamFinishedAt=Date.now();await saveJobs();}
     if(job.status==='cancelled'){if(terminal){job.error='已停止接收结果；远端任务已结束。';await record(job);return;}}
     else{

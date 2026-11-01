@@ -33,6 +33,7 @@ async function fixture(t){
  const div=document.createElement('div');document.body.append(div);const root=createRoot(div);
  await act(async()=>root.render(React.createElement(VideoPreview,{src:'/media/focus.mp4',active:true})));
  const video=div.querySelector('video'),canvas=div.querySelector('.video-still');
+ video.setAttribute('src','/media/focus.mp4');
  const state={paused:true,ready:4,time:3.5,draws:0,loads:0,plays:0,pauses:0,seeks:[],callbacks:new Map(),cancelled:[],next:0};
  Object.defineProperties(video,{paused:{get:()=>state.paused},readyState:{get:()=>state.ready},duration:{get:()=>8},videoWidth:{get:()=>1280},videoHeight:{get:()=>720},currentTime:{get:()=>state.time,set:value=>{state.time=value;state.seeks.push(value);}}});
  const emit=name=>video.dispatchEvent(new window.Event(name));
@@ -80,7 +81,7 @@ test('source replacement and unmount clear old still and cancel pending frame ca
  assert.equal(canvas.style.visibility,'visible');assert.match(canvas.dataset.previewUrl,/new.mp4\?time=0$/);assert.ok(pending.every(id=>state.cancelled.includes(id)));assert.equal(div.querySelector('[aria-label="视频进度"]').value,'0');
  act(()=>root.unmount());const pauses=state.pauses;
  act(()=>{window.dispatchEvent(new window.Event('blur'));window.dispatchEvent(new window.Event('focus'));});
- assert.equal(state.pauses,pauses);assert.equal(state.loads,0);
+ assert.equal(state.pauses,pauses);assert.equal(state.loads,1,'source replacement releases the old media');assert.equal(video.getAttribute('src'),null);
 });
 
 
@@ -122,4 +123,25 @@ test('a successfully presented video frame clears preview errors and pending ret
   assert.equal(canvas.style.visibility,'hidden');assert.equal(div.querySelector('.video-error'),null);
   await act(async()=>t.mock.timers.tick(60000));assert.equal(div.querySelector('.video-error'),null);
  }finally{globalThis.fetch=previewResponse;}
+});
+
+
+test('video is loaded only on play and offscreen playback is released with its position retained',async t=>{
+ let observe;
+ globalThis.IntersectionObserver=class{constructor(fn){observe=fn;}observe(){}disconnect(){}};
+ t.after(()=>delete globalThis.IntersectionObserver);
+ const div=document.createElement('div');document.body.append(div);const root=createRoot(div);
+ t.after(()=>{act(()=>root.unmount());div.remove();});
+ await act(async()=>root.render(React.createElement(VideoPreview,{src:'/media/lazy.mp4',active:true,aspectRatio:'9:16'})));
+ const v=div.querySelector('video');assert.equal(v.getAttribute('src'),null);assert.equal(v.preload,'none');
+ let paused=true,position=0,ready=0,loads=0;
+ Object.defineProperties(v,{paused:{get:()=>paused},readyState:{get:()=>ready},duration:{get:()=>5},currentTime:{get:()=>position,set:x=>position=x}});
+ v.play=async()=>{paused=false;v.dispatchEvent(new window.Event('play'));};
+ v.pause=()=>{paused=true;v.dispatchEvent(new window.Event('pause'));};v.load=()=>{loads++;position=0;ready=0;};
+ await act(async()=>div.querySelector('[aria-label="播放视频"]').click());assert.equal(v.getAttribute('src'),'/media/lazy.mp4');
+ act(()=>{ready=4;v.dispatchEvent(new window.Event('loadedmetadata'));position=2.5;v.dispatchEvent(new window.Event('timeupdate'));observe([{isIntersecting:false}]);});
+ assert.equal(v.getAttribute('src'),null);assert.equal(paused,true);assert.equal(loads,1);
+ act(()=>observe([{isIntersecting:true}]));assert.equal(v.getAttribute('src'),null,'returning to view does not download or autoplay');
+ await act(async()=>div.querySelector('[aria-label="播放视频"]').click());
+ act(()=>{ready=1;v.dispatchEvent(new window.Event('loadedmetadata'));});assert.equal(position,2.5);
 });

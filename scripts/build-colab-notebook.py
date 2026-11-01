@@ -35,7 +35,7 @@ import notebook_session as h3
 prepare_log = pathlib.Path('/content/h3-prepare.log')
 prepare_code = ('import sys; sys.path.insert(0, "/content/tapnow-h3"); '
                 'import notebook_session as h3; '
-                f'h3.prepare({MODE!r}, allow_download={ALLOW_DOWNLOAD!r}, install_env={INSTALL_ENV!r}); '
+                f'h3.prepare({MODE!r}, allow_download={ALLOW_DOWNLOAD!r}, install_env={INSTALL_ENV!r}, profile={PROFILE!r}); '
                 + ('h3.save_environment()' if SAVE_ENV else ''))
 with prepare_log.open('w') as output:
     prepare_process = subprocess.Popen([sys.executable, '-u', '-c', prepare_code],
@@ -67,7 +67,7 @@ if _token_file.is_file():
 else:
     h3_token = getpass.getpass('临时访问 Token（至少 32 字符）：')
 h3.start(MODE, h3_token, auto_release=AUTO_RELEASE, idle_seconds=IDLE_SECONDS,
-         open_tunnel=OPEN_AUTHENTICATED_TUNNEL)
+         open_tunnel=OPEN_AUTHENTICATED_TUNNEL, profile=PROFILE)
 '''),cell('code','''import re, time
 log = pathlib.Path('/content/h3-tunnel.log')
 for _ in range(30):
@@ -98,6 +98,12 @@ else:
 # Keep both presets in one notebook; one selected model per GPU session.
 cells[0] = cell('markdown', '# MiniMax H3 · 两套启动入口 → TapNow Local\n\n两套权重都已完整备份到 **mert 的 Google Drive**。每次只选一套启动，无需重新下载。\n\n### A · 全能参考（Ref2VA）\n图片、视频、音频可以混合参考。画布选择 **Colab → 全能参考**。\n\n### B · 首尾帧／文字（FL2VA）\n支持首帧、尾帧或首尾两张图片，也支持不带参考图的文字生成。画布选择 **Colab → 首尾帧**，或 **文字**。\n\n## 每次使用的步骤\n1. 右上角选择 **mert**；「代码执行程序 → 更改运行时类型」使用 **2026.07、G4 GPU、高 RAM**。\n2. 在下面 **① 两套启动入口** 的下拉框选择 A 或 B，并勾选账号确认项。切换模型前先结束旧会话。\n3. 按顺序运行 **② 挂载 Drive → 部署脚本 → ③ 恢复所选模型 → ④ 启动服务 → ⑤ 获取本次 HTTPS 地址**。只读进度检查是可选项。\n4. 把 **⑤ 的新输出地址**复制到 TapNow「模型连接 → Colab」，沿用相同 Token，点击「保存并连接」。旧输出地址不可直接复用。\n5. 所有任务结束、结果保存到本地并确认后，默认闲置 **60 秒**自动释放 GPU；TapNow 已保存的自动释放偏好也会在连接或生成时应用。\n\n**Drive 缓存：** `MyDrive/TapNowLocal/models/MiniMax-H3/42ed227ee7df40d41602854ae760620d6eb651fe/`。清单包含 `FL2VA` 和 `Ref2VA` 两个完整分区。相同的文本编码器及 VAE 权重通过清单共用，不要单独删除 FL2VA 文件夹。\n\n恢复和加载也会占用 GPU 时间。当前原始权重配置使用 80 GB 级 GPU、至少 120 GiB 系统内存；不包含独立生图或完整托管 2K 工作流。Ref2VA 的完整出片验证已按用户要求跳过。\n')
 cells[1] = cell('code', '# @title ① 两套启动入口：选择本次要用的模型\n# @markdown **选择本次要启动的一套模型：**\nMODEL_SET = "全能参考（Ref2VA）" # @param ["全能参考（Ref2VA）", "首尾帧／文字（FL2VA）"]\n# @markdown **确认右上角及 Drive 授权账号都是 mert，再勾选下项：**\nCONFIRMED_MERT_ACCOUNT = False # @param {type:"boolean"}\n# @markdown **生成结果全部保存确认后，自动关闭 Colab 并释放 GPU：**\nAUTO_RELEASE = True # @param {type:"boolean"}\n# @markdown **保存确认后等待的秒数（默认 60）：**\nIDLE_SECONDS = 60 # @param {type:"integer"}\n\n# CONFIRMED_MERT_ACCOUNT：核对右上角和挂载授权账号为 mert 后勾选。\n# AUTO_RELEASE：全部任务结束且本地保存确认后，闲置指定秒数释放 GPU。\n# 两套均已缓存到 Drive；日常不要开启重新下载或安装。\nMODE = {"全能参考（Ref2VA）": "ref2va", "首尾帧／文字（FL2VA）": "fl2va"}[MODEL_SET]\nALLOW_DOWNLOAD = False\nINSTALL_ENV = False\nSAVE_ENV = False\nOPEN_AUTHENTICATED_TUNNEL = True\nassert CONFIRMED_MERT_ACCOUNT, \'请确认右上角与挂载授权账号都是 mert，再勾选账号确认项\'\nassert IDLE_SECONDS >= 30, \'自动释放闲置时间至少 30 秒\'\nprint(\'本次启动：\', MODEL_SET)\nprint(\'权重来源：mert Drive 已有缓存；仅恢复本次所选的一套\')\n')
+config = ''.join(cells[1]['source'])
+config = config.replace('MODEL_SET = "全能参考（Ref2VA）"', 'MODEL_SET = "全能参考 Turbo（4 步／544p）"')
+config = config.replace('# @param ["全能参考（Ref2VA）",', '# @param ["全能参考 Turbo（4 步／544p）", "全能参考（Ref2VA）",')
+config = config.replace('MODE = {', 'PROFILE = "ref2va-turbo-4step" if "Turbo" in MODEL_SET else "standard"\nMODE = {"全能参考 Turbo（4 步／544p）": "ref2va", ')
+cells[1]['source'] = config.splitlines(keepends=True)
+cells[0]['source'].extend(['\n### Ref2VA Turbo\n', '选择 Turbo 后首次下载约 1.29 GiB 专用加速权重并校验备份到 Drive。画布使用 544p，服务自动采用 4 步和 match 参考图缩放。基础权重沿用已有 Ref2VA 缓存。\n'])
 cells[1]['metadata']['cellView'] = 'form'
 cells[2]['source'].insert(0, '# @title ② 挂载 mert Drive（两套模型共用）\n')
 cells[5]['source'].insert(0, '# @title ③ 从 Drive 恢复所选模型和环境\n')

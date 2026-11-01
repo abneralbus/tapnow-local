@@ -88,3 +88,9 @@ subprocess.run([sys.executable, '-u', '/content/tapnow-h3/cache_model.py', '--pa
 - `python tests/colab-cache.test.py`
 - `python scripts/build-colab-notebook.py`
 - `npm run build`
+
+### 画布快捷控制
+
+画布顶部的「打开 Colab」会打开「模型连接 → Colab → Colab 笔记本地址」中保存的笔记本；GPU 连接和 Drive 授权仍在 Colab 完成。笔记本地址仅保存在本机配置中。
+
+「关闭 GPU」先重试本地结果确认，再请求释放当前连接的运行时。有生成、下载或未确认结果时，服务会拒绝释放。按钮提示“已请求”不代表已确认关机；服务无法连接时，应到 Colab 手动断开并删除运行时。自动释放设置继续生效。

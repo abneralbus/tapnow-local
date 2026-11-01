@@ -18,3 +18,17 @@ test('explicit audio tags remain stable when preceding videos carry soundtracks'
   assert.deepEqual(body.conditions.map(c=>c.assetId),['voice.wav','music.wav','clip.mp4','subject.jpg']);
   assert.equal(body.prompt,'<Audio 1> voice and <Audio 2> music with <Video 1>');
 });
+
+
+test('reference upload timeout identifies the stage and never reaches generation submission',async t=>{
+ const media=await mkdtemp(path.join(tmpdir(),'h3-upload-timeout-'));
+ t.after(()=>rm(media,{recursive:true,force:true}));
+ await writeFile(path.join(media,'clip.mp4'),'video');const calls=[];
+ const remote=async(route)=>{
+  calls.push(route);
+  if(route==='/v1/session')return {json:async()=>({sessionId:'test',phase:'ready',tasks:['ref2va']})};
+  throw new DOMException('aborted','TimeoutError');
+ };
+ await assert.rejects(prepareColab({mode:'reference',references:[{src:'/media/clip.mp4',type:'video',role:'reference'}]},remote,{},media),/参考视频.*上传超过 5 分钟.*尚未提交 GPU 生成/);
+ assert.equal(calls.length,2);assert.ok(calls[1].startsWith('/v1/assets/'));
+});

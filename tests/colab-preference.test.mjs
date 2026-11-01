@@ -6,6 +6,7 @@ import path from 'node:path';
 import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {prepareColab} from '../server/colab-client.mjs';
+import {colabNotebookUrl} from '../shared/colab-notebook.mjs';
 const root=path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const delay=ms=>new Promise(r=>setTimeout(r,ms));
 test('auto-release preference saves offline, survives URL updates and a server restart',async t=>{
@@ -23,7 +24,14 @@ test('auto-release preference saves offline, survives URL updates and a server r
  assert.deepEqual((await call('/colab/settings',{autoRelease:true})).body,{autoRelease:true,synced:false});
  await call('/config',{colabUrl:'http://127.0.0.1:9',colabToken:''},'PUT');
  assert.equal((await call('/config',null,'GET')).body.colabAutoRelease,true);
+ const notebook='https://colab.research.google.com/drive/test-notebook';
+ await call('/config',{colabUrl:'http://127.0.0.1:9',colabNotebookUrl:notebook},'PUT');
+ assert.equal((await call('/config',null,'GET')).body.colabNotebookUrl,notebook);
+ await call('/config',{colabUrl:'http://127.0.0.1:9'},'PUT');
+ assert.equal((await call('/config',null,'GET')).body.colabNotebookUrl,notebook);
+ assert.notEqual((await call('/config',{colabUrl:'http://127.0.0.1:9',colabNotebookUrl:'javascript:alert(1)'},'PUT')).status,200);
  await stop();url=await start();
+ assert.equal((await call('/config',null,'GET')).body.colabNotebookUrl,notebook);
  assert.equal((await call('/config',null,'GET')).body.colabAutoRelease,true);
 });
 test('new model session receives saved auto-release before generation and rejects unconfirmed setting',async()=>{
@@ -33,4 +41,9 @@ test('new model session receives saved auto-release before generation and reject
  const result=await prepareColab({mode:'text',prompt:'fixture',references:[]},remote,{colabAutoRelease:true},'/unused');
  assert.equal(result.sessionId,'fresh');assert.deepEqual(calls,['/v1/session','/v1/session/settings']);
  await assert.rejects(prepareColab({mode:'text',prompt:'fixture',references:[]},async()=>({json:async()=>session}),{colabAutoRelease:true},'/unused'),/未确认自动释放/);
+});
+
+test('notebook links allow only Colab HTTPS without embedded credentials',()=>{
+ assert.equal(colabNotebookUrl(''),'https://colab.research.google.com/');
+ for(const value of ['javascript:alert(1)','https://evil.example/','https://secret@colab.research.google.com/','http://colab.research.google.com/',null])assert.throws(()=>colabNotebookUrl(value));
 });

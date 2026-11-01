@@ -10,12 +10,13 @@ export async function loadVideoPreview(url,signal){
   return blob;
 }
 const clock=seconds=>`${Math.floor(seconds/60)}:${String(Math.floor(seconds%60)).padStart(2,'0')}`;
-export default function VideoPreview({src,active,onCanPlay}){
-  const video=useRef(),frame=useRef(),still=useRef(),retryPreview=useRef(()=>{});
+export default function VideoPreview({src,active,onCanPlay,aspectRatio}){
+  const video=useRef(),frame=useRef(),still=useRef(),retryPreview=useRef(()=>{}),activate=useRef(()=>{});
   const [playing,setPlaying]=useState(false),[time,setTime]=useState(0),[duration,setDuration]=useState(0),[volume,setVolume]=useState(1),[muted,setMuted]=useState(false),[error,setError]=useState(''),[previewError,setPreviewError]=useState('');
   useEffect(()=>{
     const media=video.current,image=still.current;
-    let position=0,suspended=false,restoring=false,hasFrame=false,callback=null,disposed=false,requested=null,controller=null,retryTimer=null,attempt=0,objectUrl=null,requestId=0,failed=false;
+    let position=0,suspended=false,restoring=false,hasFrame=false,callback=null,disposed=false,requested=null,controller=null,retryTimer=null,attempt=0,objectUrl=null,requestId=0,failed=false,inView=true,detached=false;
+    if(media.getAttribute('src')&&media.getAttribute('src')!==src){media.pause();media.removeAttribute('src');media.load();}
     setPlaying(false);setTime(0);setDuration(0);setError('');setPreviewError('');image.removeAttribute('src');image.style.visibility='hidden';
     function sync(){
       if(!suspended&&!restoring&&Number.isFinite(media.currentTime))position=media.currentTime;
@@ -46,7 +47,7 @@ export default function VideoPreview({src,active,onCanPlay}){
       const url=previewUrl(src,Math.min(position,end));requestPreview(url);
       if(hasFrame)image.style.visibility='visible';
     }
-    function previewLoaded(){failed=false;hasFrame=true;attempt=0;setPreviewError('');if(media.paused||suspended)image.style.visibility='visible';}
+    function previewLoaded(){if(image.naturalWidth&&image.naturalHeight)frame.current.style.aspectRatio=`${image.naturalWidth}/${image.naturalHeight}`;failed=false;hasFrame=true;attempt=0;setPreviewError('');if(media.paused||suspended)image.style.visibility='visible';}
     function previewFailed(){failed=true;hasFrame=false;image.style.visibility='hidden';if(media.paused||suspended)setPreviewError('浏览器无法显示视频预览，请重试。');}
     function retry(){if(!failed||!requested)return;attempt=0;setPreviewError('');requestPreview(requested,true);}
     retryPreview.current=retry;
@@ -74,11 +75,25 @@ export default function VideoPreview({src,active,onCanPlay}){
       try{media.currentTime=target;restoring=false;setTime(target);}catch{restoring=false;}
     }
     function resume(){
-      if(document.visibilityState==='hidden')return;retry();if(!suspended)return;
+      if(document.visibilityState==='hidden'||!inView||detached)return;retry();if(!suspended)return;
       suspended=false;restoring=true;sync();
       // Reload only when the browser really released the resource; never reset a healthy decoder.
-      if(media.readyState===0)media.load();else seekBack();
+      if(media.readyState===0&&media.getAttribute('src'))media.load();else seekBack();
     }
+    activate.current=()=>{
+      if(!inView)return false;
+      if(!media.getAttribute('src')){restoring=true;suspended=false;detached=false;media.src=src;}
+      else if(suspended){suspended=false;restoring=true;seekBack();}
+      return true;
+    };
+    const observer=typeof IntersectionObserver==='undefined'?null:new IntersectionObserver(entries=>{
+      inView=entries[0].isIntersecting;
+      if(!inView){
+        suspend();
+        if(media.getAttribute('src')){detached=true;media.removeAttribute('src');media.load();}
+      }else if(!detached)resume();
+    },{root:frame.current.closest('.react-flow'),threshold:0});
+    observer?.observe(frame.current);
     function visibility(){if(document.visibilityState==='hidden')suspend();else resume();}
     function metadata(){seekBack();sync();}
     function decoded(){
@@ -96,7 +111,7 @@ export default function VideoPreview({src,active,onCanPlay}){
     document.addEventListener('visibilitychange',visibility);
     capture();sync();decoded();if(document.visibilityState==='hidden')suspend();
     return()=>{
-      disposed=true;clearTimeout(retryTimer);controller?.abort();retryPreview.current=()=>{};if(objectUrl)URL.revokeObjectURL(objectUrl);
+      observer?.disconnect();activate.current=()=>false;disposed=true;clearTimeout(retryTimer);controller?.abort();retryPreview.current=()=>{};if(objectUrl)URL.revokeObjectURL(objectUrl);
       image.removeEventListener('load',previewLoaded);image.removeEventListener('error',previewFailed);window.removeEventListener('online',retry);
       cancelFrame();for(const [name,handler] of Object.entries(events))media.removeEventListener(name,handler);
       window.removeEventListener('blur',suspend);window.removeEventListener('focus',resume);
@@ -104,13 +119,13 @@ export default function VideoPreview({src,active,onCanPlay}){
       document.removeEventListener('visibilitychange',visibility);
     };
   },[src]);
-  async function toggle(){try{setError('');if(video.current.paused)await video.current.play();else video.current.pause();}catch{setError('无法播放此视频，请重试或下载查看。');}}
-  return <div className="video-preview" ref={frame}>
-    <video ref={video} src={src} playsInline preload="auto" draggable={false} onCanPlay={onCanPlay}/>
+  async function toggle(){try{setError('');if(video.current.paused){if(activate.current())await video.current.play();}else video.current.pause();}catch{setError('无法播放此视频，请重试或下载查看。');}}
+  return <div className="video-preview" ref={frame} style={aspectRatio?{aspectRatio:aspectRatio.replace(':','/')}:undefined}>
+    <video ref={video} playsInline preload="none" draggable={false} onCanPlay={onCanPlay}/>
     <img ref={still} className="video-still" alt="" aria-hidden="true" draggable={false}/>
     {active&&<div className="video-controls nodrag nowheel" onDoubleClick={event=>event.stopPropagation()}>
       <button aria-label={playing?'暂停视频':'播放视频'} onClick={toggle}>{playing?<Pause size={15}/>:<Play size={15}/>}</button>
-      <span>{clock(time)}</span><input aria-label="视频进度" type="range" min="0" max={duration||1} step="0.01" value={Math.min(time,duration||1)} disabled={!duration} onChange={event=>{video.current.currentTime=Number(event.target.value);setTime(Number(event.target.value));}}/><span>{clock(duration)}</span>
+      <span>{clock(time)}</span><input aria-label="视频进度" type="range" min="0" max={duration||1} step="0.01" value={Math.min(time,duration||1)} disabled={!duration} onChange={event=>{activate.current();video.current.currentTime=Number(event.target.value);setTime(Number(event.target.value));}}/><span>{clock(duration)}</span>
       <button aria-label={muted?'取消静音':'静音'} onClick={()=>{video.current.muted=!video.current.muted;}}>{muted?<VolumeX size={15}/>:<Volume2 size={15}/>}</button>
       <input className="video-volume" aria-label="视频音量" type="range" min="0" max="1" step="0.05" value={muted?0:volume} onChange={event=>{video.current.volume=Number(event.target.value);video.current.muted=false;}}/>
       <button aria-label="全屏视频" onClick={async()=>{try{if(document.fullscreenElement===frame.current)await document.exitFullscreen();else if(frame.current.requestFullscreen)await frame.current.requestFullscreen();else video.current.webkitEnterFullscreen?.();}catch{setError('当前浏览器无法进入全屏。');}}}><Maximize size={15}/></button>

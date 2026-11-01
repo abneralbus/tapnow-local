@@ -1,0 +1,43 @@
+{
+  "status": "prepared_not_gpu_validated",
+  "base": {
+    "task": "ref2va",
+    "seconds": 5,
+    "target": {
+      "short_edge": 544,
+      "aspect_ratio": "16:9",
+      "duration_seconds": 5
+    },
+    "seed": 42,
+    "num_outputs_per_prompt": 1,
+    "flow_shift": 12,
+    "audio_flow_shift": 3,
+    "reference_resize_mode": "match",
+    "quality": "lossless",
+    "num_inference_steps": 50
+  },
+  "turbo": {
+    "task": "ref2va",
+    "seconds": 5,
+    "target": {
+      "short_edge": 544,
+      "aspect_ratio": "16:9",
+      "duration_seconds": 5
+    },
+    "seed": 42,
+    "num_outputs_per_prompt": 1,
+    "flow_shift": 12,
+    "audio_flow_shift": 3,
+    "reference_resize_mode": "match",
+    "quality": "lossless",
+    "num_inference_steps": 4
+  },
+  "adapter": {
+    "repo": "lightx2v/Minimax-h3-Turbo",
+    "revision": "30f485ed874aa44c8183348ad361c5eabad318da",
+    "filename": "minimax_h3_ref2v_turbo_4step_v0.1_bf16.safetensors",
+    "alpha": 8,
+    "scale": 1.0
+  },
+  "comparison": "Use identical prompt and references. Both use match resizing to isolate Turbo. Report upload, encoding, denoising, decoding and download separately. Model startup is excluded and reported separately."
+}
