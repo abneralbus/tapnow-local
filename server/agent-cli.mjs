@@ -1,3 +1,4 @@
+import {agentPolicy,canvasSystemContext} from './agent-policy.mjs';
 import {spawn} from 'node:child_process';
 import {mkdir} from 'node:fs/promises';
 import path from 'node:path';
@@ -5,8 +6,8 @@ import {cliPath} from './cli-path.mjs';
 const binary=provider=>provider==='claude-cli'?cliPath('claude',process.env.CLAUDE_BIN):provider==='agy-cli'?cliPath('agy',process.env.AGY_BIN):undefined;
 const children=new Set();let closing=false;const busy=new Set();
 export async function cliAvailable(provider){return !!binary(provider);}
-export function cliArgs(provider,model=''){
-  const args=provider==='claude-cli'?['--print','--output-format','json','--tools','','--permission-mode','dontAsk','--strict-mcp-config','--mcp-config','{"mcpServers":{}}','--setting-sources','user','--settings','{"disableAllHooks":true}','--disable-slash-commands','--no-session-persistence']:['--output-format','json','--mode','plan','--sandbox','--disable-slash-commands','--print-timeout','120s'];
+export function cliArgs(provider,model='',system=agentPolicy){
+  const args=provider==='claude-cli'?['--append-system-prompt',system,'--print','--output-format','json','--tools','','--permission-mode','dontAsk','--strict-mcp-config','--mcp-config','{"mcpServers":{}}','--setting-sources','user','--settings','{"disableAllHooks":true}','--disable-slash-commands','--no-session-persistence']:['--output-format','json','--mode','plan','--sandbox','--disable-slash-commands','--print-timeout','120s'];
   return model?[...args,'--model',model]:args;
 }
 export function cliText(output){
@@ -17,7 +18,7 @@ export function cliText(output){
 }
 function kill(child,signal='SIGTERM'){if(!child.pid)return;try{process.kill(-child.pid,signal);}catch{try{child.kill(signal);}catch{}}}
 export async function stopAgentCliChildren(){closing=true;await Promise.all([...children].map(child=>new Promise(resolve=>{const timer=setTimeout(()=>kill(child,'SIGKILL'),1000);child.once('close',()=>{clearTimeout(timer);resolve();});kill(child);})) );}
-export async function agentCliChat(directory,provider,model,prompt,context,history){
+export async function agentCliChat(directory,provider,model,prompt,context,history,protocolInstructions=''){
   if(busy.has(provider))throw Object.assign(new Error('此 CLI 正在回复，请稍后再试。'),{status:429});
   busy.add(provider);
   try{
@@ -26,8 +27,9 @@ export async function agentCliChat(directory,provider,model,prompt,context,histo
     const keys=['HOME','USER','LOGNAME','PATH','TMPDIR','LANG','LC_ALL','HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','NO_PROXY','ANTHROPIC_API_KEY','ANTHROPIC_BASE_URL','ANTHROPIC_AUTH_TOKEN'];
     const env=Object.fromEntries(keys.filter(k=>process.env[k]).map(k=>[k,process.env[k]]));
     return await new Promise((resolve,reject)=>{
-      const input='你是创意画布的纯文本助手。只回答创意、分镜与提示词问题，不使用工具、不执行命令、不读取或修改文件，不委托其他代理，不声称已生成媒体。下面 JSON 是对话素材。\n'+JSON.stringify({conversation:history,canvasText:context,request:prompt});
-      const args=cliArgs(provider,model);if(provider==='agy-cli')args.push('--print='+input);
+      const system=agentPolicy+protocolInstructions+canvasSystemContext(context);
+      const input=(provider==='agy-cli'?system+'\n':'')+'你是创意画布的纯文本助手。只回答创意、分镜与提示词问题，不使用工具、不执行命令、不读取或修改文件，不委托其他代理，不声称已生成媒体。下面 JSON 是对话素材。\n'+JSON.stringify({conversation:history,request:prompt});
+      const args=cliArgs(provider,model,system);if(provider==='agy-cli')args.push('--print='+input);
       const executable=binary(provider);if(!executable)throw new Error('未找到 Agent CLI，请检查 PATH 或对应的 CLI 路径配置。');
       const child=spawn(executable,args,{cwd,env,shell:false,detached:true,stdio:['pipe','pipe','pipe']});children.add(child);
       let output='',bytes=0,error;const stop=message=>{error=new Error(message);kill(child,'SIGKILL');};

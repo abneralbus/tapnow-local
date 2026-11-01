@@ -52,3 +52,10 @@ test('CLI arguments keep tool permissions bounded and parse the actual print res
   assert.ok(agy.includes('--sandbox'));assert.equal(agy[agy.indexOf('--mode')+1],'plan');assert.ok(!agy.includes('--dangerously-skip-permissions'));assert.ok(!agy.includes('--remote-control'));
   assert.equal(cliText('{"type":"result","result":"连接正常。","is_error":false}'),'连接正常。');assert.throws(()=>cliText('{"is_error":true,"result":"private diagnostic"}'),/调用失败/);
 });
+test('action-mode chat delivers the action protocol and complete canvas as system instructions',async t=>{
+ const dir=await directory(t),previous=global.fetch;t.after(()=>{global.fetch=previous;});
+ await writeAgentSettings(dir,{provider:'anthropic',baseUrl:'https://api.anthropic.com/v1',model:'fixture-model',apiKey:'local-secret'});
+ global.fetch=async(url,options)=>{const body=JSON.parse(options.body);assert.match(body.system,/"type":"connect"/);assert.match(body.system,/CANVAS_FINAL_NODE/);assert.equal(body.messages.at(-1).content,'整理');return new Response(JSON.stringify({content:[{type:'text',text:JSON.stringify({text:'待执行',actions:[{type:'connect',source:'a',target:'b'}]})}]}));};
+ const result=await agentChat(dir,{prompt:'整理',context:'x'.repeat(20000)+'CANVAS_FINAL_NODE',permissions:{connect:true}});
+ assert.equal(result.actions[0].type,'connect');
+});

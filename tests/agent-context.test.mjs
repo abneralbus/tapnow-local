@@ -1,16 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {canvasAgentContext} from '../src/agent-context.mjs';
-
-test('selected media includes upstream text across a cycle without unrelated content or media URLs',()=>{
-  const nodes=[{id:'script',type:'text',data:{title:'剧本',text:'小狐狸进入松林'}},{id:'image',type:'image',data:{title:'首帧',prompt:'晨光',src:'/media/private.jpg'}},{id:'video',type:'video',selected:true,data:{title:'镜头',prompt:'缓缓推进',src:'/media/private.mp4',status:'completed'}},{id:'other',type:'text',data:{text:'无关草稿'}}];
-  const text=canvasAgentContext({name:'短片',nodes,edges:[{source:'script',target:'image'},{source:'image',target:'video'},{source:'video',target:'script'}]});
-  assert.match(text,/小狐狸进入松林/);assert.match(text,/晨光/);assert.match(text,/镜头（选中）/);assert.match(text,/script → image/);assert.match(text,/未提供图片像素/);
-  assert.doesNotMatch(text,/无关草稿|\/media\//);assert.equal(nodes[0].selected,undefined);
+import {agentRequest} from '../server/agent.mjs';
+test('full canvas exposes measured geometry and references without private media paths',()=>{
+ const nodes=[{id:'a',type:'image',position:{x:20,y:40},measured:{width:328,height:400},data:{title:'图片 1',prompt:'晨光',width:1920,height:1080,src:'/media/private.png'}},{id:'b',type:'video',selected:true,data:{prompt:'@图片 1',mentions:[{nodeId:'a',token:'@图片 1',start:0,end:5}]}},{id:'c',type:'text',data:{text:'未选中草稿'}}];
+ const text=canvasAgentContext({nodes,edges:[{id:'e',source:'a',target:'b'}],referenceIds:['b']});const snapshot=JSON.parse(text);
+ assert.equal(snapshot.nodes.length,3);assert.equal(snapshot.nodes[0].width,328);assert.equal(snapshot.nodes[0].height,400);assert.equal(snapshot.nodes[0].media.width,1920);
+ assert.equal(snapshot.nodes[1].referenced,true);assert.equal(snapshot.nodes[1].width,null);assert.equal(snapshot.edges[0].id,'e');
+ assert.match(text,/未选中草稿/);assert.doesNotMatch(text,/private.png/);assert.match(text,/未提供图片像素/);
 });
-
-test('unselected canvas provides a bounded overview and handles empty canvases',()=>{
-  assert.match(canvasAgentContext({nodes:[],edges:[]}),/共 0 个节点/);
-  const text=canvasAgentContext({name:'草稿',nodes:Array.from({length:100},(_,i)=>({id:String(i),type:'text',data:{text:'内容'.repeat(3000)}})),edges:[]});
-  assert.match(text,/当前画布概述/);assert.match(text,/其余节点已省略/);assert.ok(text.length<=16000);
+test('large canvases and long prompts survive client context and backend request without truncation',()=>{
+ const nodes=Array.from({length:100},(_,i)=>({id:String(i),type:'text',data:{text:'内容'.repeat(3000)+'END'+i}}));
+ const edges=nodes.slice(1).map((n,i)=>({id:'e'+i,source:String(i),target:n.id}));
+ const text=canvasAgentContext({nodes,edges});const received=JSON.parse(agentRequest({prompt:'整理',context:text}).context);
+ assert.equal(received.nodeCount,100);assert.equal(received.nodes.length,100);assert.equal(received.edges.length,99);assert.ok(received.nodes[99].text.endsWith('END99'));assert.equal(received.complete,true);
+ assert.equal(JSON.parse(canvasAgentContext({})).nodeCount,0);
 });
