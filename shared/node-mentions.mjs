@@ -38,3 +38,14 @@ export function resolveMentions(text,bindings=[],nodes=[]){
  }start=text.indexOf(token,end);}}
  return resolved.sort((a,b)=>a.start-b.start);
 }
+
+export function mentionCandidates(nodes,edges=[],targetId){
+ const sources=new Set(edges.filter(edge=>edge.target===targetId).map(edge=>edge.source));
+ return nodes.filter(node=>node.id!==targetId&&nodeLabels[node.type]&&(!sources.size||sources.has(node.id)))
+  .sort((a,b)=>a.position.y-b.position.y||a.position.x-b.position.x)
+  .map(node=>({id:node.id,type:node.type,title:node.data.title||nodeLabels[node.type],src:node.data.src}));
+}
+export function connectMention(nodes,edges,source,target){
+ if(source===target||!nodes.some(n=>n.id===source)||!nodes.some(n=>n.id===target)||edges.some(e=>e.source===source&&e.target===target))return edges;
+ return [...edges,{id:crypto.randomUUID(),source,target}];
+}

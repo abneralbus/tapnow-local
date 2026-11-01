@@ -36,3 +36,26 @@ test('provider prompts identify the actual upload order and preserve binding des
  assert.throws(()=>referencePrompt('参考 @视频 1',refs),/未关联/);
  const leading=generationRequest({provider:'flow',kind:'image',prompt:'  '+pick.text,references:refs,mentions:pick.mentions.map(m=>({...m,start:m.start+2,end:m.end+2})),mode:'reference'});assert.match(leading.prompt,/采用 \[参考图 2\]/);
 });
+
+test('mention candidates use incoming neighbors, otherwise the whole canvas, ordered top then left',async()=>{
+ const {mentionCandidates,connectMention}=await import('../shared/node-mentions.mjs');
+ const nodes=[
+  {id:'target',type:'image',position:{x:0,y:0},data:{title:'结果'}},
+  {id:'low',type:'video',position:{x:-100,y:20},data:{title:'下方视频'}},
+  {id:'right',type:'text',position:{x:100,y:0},data:{title:'右侧文本',text:'正文'}},
+  {id:'left',type:'audio',position:{x:0,y:0},data:{title:'左侧音频'}},
+  {id:'high',type:'image',position:{x:900,y:-1},data:{title:'上方图片'}}
+ ];
+ const original=structuredClone(nodes);
+ assert.deepEqual(mentionCandidates(nodes,[],'target').map(n=>n.id),['high','left','right','low']);
+ const edges=[{id:'a',source:'low',target:'target'},{id:'b',source:'right',target:'target'},{id:'c',source:'target',target:'high'}];
+ assert.deepEqual(mentionCandidates(nodes,edges,'target').map(n=>n.id),['right','low']);
+ const connected=connectMention(nodes,[],'right','target');
+ assert.equal(connected.length,1);assert.equal(connected[0].source,'right');assert.equal(connected[0].target,'target');
+ assert.deepEqual(mentionCandidates(nodes,connected,'target').map(n=>n.id),['right']);
+ assert.equal(connectMention(nodes,connected,'right','target'),connected);
+ assert.equal(connectMention(nodes,connected,'target','target'),connected);
+ assert.equal(connectMention(nodes,connected,'missing','target'),connected);
+ assert.deepEqual(nodes,original);
+ assert.deepEqual(mentionCandidates(nodes,[{source:'deleted',target:'target'}],'target'),[]);
+});
